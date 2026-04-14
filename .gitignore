@@ -1,0 +1,20 @@
+# База данных
+economy.db
+*.db
+
+# Файлы Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Виртуальное окружение
+venv/
+env/
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# Логи
+*.log
