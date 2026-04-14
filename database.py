@@ -81,3 +81,20 @@ def add_shop_item(role_id, role_name, price):
               (role_id, role_name, price))
     conn.commit()
     conn.close()
+
+# Новые функции для удобства работы с магазином
+def get_shop_items():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT role_id, role_name, price FROM shop")
+    items = c.fetchall()
+    conn.close()
+    return items
+
+def get_shop_item(role_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT role_name, price FROM shop WHERE role_id = ?", (role_id,))
+    item = c.fetchone()
+    conn.close()
+    return item
