@@ -497,7 +497,7 @@ class EconomyView(View):
         embed = discord.Embed(title="🛒 Магазин ролей", color=discord.Color.green())
         for role_id, role_name, price_coins, pirozhok_type, pirozhok_qty in roles:
             role = interaction.guild.get_role(role_id)
-            display_name = role.mention if role else role_name
+            display_name = role.name if role else role_name
             text = []
             if price_coins and price_coins > 0:
                 text.append(f"{price_coins} {COIN_NAME}")
@@ -506,7 +506,6 @@ class EconomyView(View):
             if not text:
                 text.append("Бесплатно? (ошибка)")
             embed.add_field(name=display_name, value=" или ".join(text), inline=False)
-        # Добавляем кнопку выбора роли для покупки (Select)
         view = ShopSelectView(interaction.user.id)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
@@ -575,15 +574,9 @@ class ShopSelect(Select):
             await interaction.response.send_message("❌ Роль не найдена в магазине.", ephemeral=True)
             return
         role_name, price_coins, pirozhok_type, pirozhok_qty = role_data
-        # Проверяем, есть ли хотя бы один способ оплаты
-        if (not price_coins or price_coins <= 0) and (not pirozhok_type or not pirozhok_qty or pirozhok_qty <= 0):
-            await interaction.response.send_message("❌ Эта роль не имеет цены (ошибка конфигурации).", ephemeral=True)
-            return
-        # Если только один способ оплаты, сразу открываем модалку, иначе показываем выбор
         has_coins = price_coins and price_coins > 0
         has_pirozhki = pirozhok_type and pirozhok_qty and pirozhok_qty > 0
         if has_coins and not has_pirozhki:
-            # Сразу покупка за монеты
             bal = get_balance(interaction.user.id)
             if bal < price_coins:
                 await interaction.response.send_message(f"❌ Недостаточно монет! Нужно {price_coins}, у вас {bal}.", ephemeral=True)
@@ -600,7 +593,6 @@ class ShopSelect(Select):
             embed = discord.Embed(title="✅ Покупка", description=f"Вы купили роль {role.mention} за {price_coins} {COIN_NAME}!", color=discord.Color.green())
             await interaction.response.send_message(embed=embed, ephemeral=True)
         elif has_pirozhki and not has_coins:
-            # Сразу покупка за пирожки
             have = get_pirozhki_quantity(interaction.user.id, pirozhok_type)
             if have < pirozhok_qty:
                 await interaction.response.send_message(f"❌ Недостаточно пирожков '{pirozhok_type}'! Нужно {pirozhok_qty}, у вас {have}.", ephemeral=True)
@@ -628,7 +620,6 @@ class ShopSelect(Select):
             else:
                 await interaction.response.send_message("❌ Ошибка при списании пирожков.", ephemeral=True)
         else:
-            # Есть оба способа — показываем выбор
             view = BuyRoleChoiceView(interaction.user.id, role_id, role_name, price_coins, pirozhok_type, pirozhok_qty)
             embed = discord.Embed(title=f"Покупка роли {role_name}", description="Выберите способ оплаты:", color=discord.Color.orange())
             await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
