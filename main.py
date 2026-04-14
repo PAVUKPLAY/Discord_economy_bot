@@ -67,66 +67,6 @@ class TransferModal(Modal):
         embed = discord.Embed(title="✅ Перевод выполнен", description=f"Вы передали **{amount}** {COIN_NAME} пользователю <@{receiver_id}>", color=discord.Color.green())
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-class BuyRoleModal(Modal):
-    def __init__(self, user_id):
-        super().__init__(title="Покупка роли", timeout=120)
-        self.user_id = user_id
-        self.role_id_input = TextInput(label="ID роли", placeholder="Цифровой ID роли", required=True)
-        self.add_item(self.role_id_input)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            role_id = int(self.role_id_input.value)
-        except ValueError:
-            await interaction.response.send_message("❌ ID роли должно быть числом.", ephemeral=True)
-            return
-        item = get_shop_item(role_id)
-        if not item:
-            await interaction.response.send_message("❌ Товар не найден в магазине.", ephemeral=True)
-            return
-        role = interaction.guild.get_role(role_id)
-        if not role:
-            await interaction.response.send_message("❌ Роль не существует на этом сервере.", ephemeral=True)
-            return
-        price = item[1]
-        bal = get_balance(self.user_id)
-        if bal < price:
-            await interaction.response.send_message(f"❌ Недостаточно монет! Нужно {price}, у вас {bal}.", ephemeral=True)
-            return
-        if role in interaction.user.roles:
-            await interaction.response.send_message("❌ У вас уже есть эта роль.", ephemeral=True)
-            return
-        update_balance(self.user_id, -price)
-        await interaction.user.add_roles(role)
-        embed = discord.Embed(title="✅ Покупка", description=f"Вы купили роль {role.mention} за {price} {COIN_NAME}!", color=discord.Color.green())
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-class AddShopItemModal(Modal):
-    def __init__(self):
-        super().__init__(title="Добавить товар в магазин (монеты)", timeout=120)
-        self.role_id_input = TextInput(label="ID роли", placeholder="Цифровой ID", required=True)
-        self.price_input = TextInput(label="Цена", placeholder="Число", required=True)
-        self.add_item(self.role_id_input)
-        self.add_item(self.price_input)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message("❌ Только администраторы могут добавлять товары.", ephemeral=True)
-            return
-        try:
-            role_id = int(self.role_id_input.value)
-            price = int(self.price_input.value)
-        except ValueError:
-            await interaction.response.send_message("❌ ID роли и цена должны быть числами.", ephemeral=True)
-            return
-        role = interaction.guild.get_role(role_id)
-        if not role:
-            await interaction.response.send_message("❌ Роль не найдена.", ephemeral=True)
-            return
-        add_shop_item(role_id, role.name, price)
-        embed = discord.Embed(title="✅ Готово", description=f"Роль {role.mention} добавлена в магазин за {price} {COIN_NAME}.", color=discord.Color.green())
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
 class FlipModal(Modal):
     def __init__(self, user_id):
         super().__init__(title="Орёл или решка", timeout=120)
@@ -188,7 +128,7 @@ class FlipChoiceView(View):
             embed.color = discord.Color.red()
         await interaction.response.edit_message(embed=embed, view=None)
 
-# ---------- МОДАЛЬНЫЕ ОКНА ДЛЯ ПИРОЖКОВ ----------
+# ---------- МОДАЛЬНЫЕ ОКНА ДЛЯ ИНГРЕДИЕНТОВ И ПИРОЖКОВ ----------
 class BuyIngredientModal(Modal):
     def __init__(self, user_id, ingredient_id, ingredient_name, price):
         super().__init__(title=f"Покупка {ingredient_name}", timeout=120)
@@ -223,7 +163,7 @@ class MakePirozhokModal(Modal):
         self.user_id = user_id
         self.recipe_id = recipe_id
         self.recipe_name = recipe_name
-        self.required = required_ingredients  # dict
+        self.required = required_ingredients
         self.quantity_input = TextInput(label="Количество пирожков", placeholder="Сколько испечь?", required=True)
         self.add_item(self.quantity_input)
 
@@ -284,32 +224,102 @@ class SellPirozhokModal(Modal):
         embed = discord.Embed(title="💰 Продажа", description=f"Вы продали {qty} шт. **{self.recipe_name}** за {total} {COIN_NAME}.", color=discord.Color.green())
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-class BuyRoleWithPirozhkiModal(Modal):
-    def __init__(self, user_id, role_id, role_name, pirozhok_type, quantity):
-        super().__init__(title=f"Покупка роли {role_name}", timeout=120)
+# ---------- МОДАЛЬНЫЕ ОКНА ДЛЯ МАГАЗИНА РОЛЕЙ ----------
+class AddShopRoleModal(Modal):
+    def __init__(self):
+        super().__init__(title="Добавить роль в магазин", timeout=120)
+        self.role_id_input = TextInput(label="ID роли", placeholder="Цифровой ID роли", required=True)
+        self.price_coins_input = TextInput(label="Цена в монетах (0 если не продаётся)", placeholder="Число", required=True, default="0")
+        self.pirozhok_type_input = TextInput(label="Тип пирожка (оставьте пустым если не надо)", placeholder="пирожок с картошкой / мясом / луком и яйцом", required=False)
+        self.pirozhok_qty_input = TextInput(label="Количество пирожков (0 если не надо)", placeholder="Число", required=True, default="0")
+        self.add_item(self.role_id_input)
+        self.add_item(self.price_coins_input)
+        self.add_item(self.pirozhok_type_input)
+        self.add_item(self.pirozhok_qty_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Только администраторы могут добавлять товары.", ephemeral=True)
+            return
+        try:
+            role_id = int(self.role_id_input.value)
+            price_coins = int(self.price_coins_input.value)
+            pirozhok_qty = int(self.pirozhok_qty_input.value)
+        except ValueError:
+            await interaction.response.send_message("❌ ID роли и цены должны быть числами.", ephemeral=True)
+            return
+        role = interaction.guild.get_role(role_id)
+        if not role:
+            await interaction.response.send_message("❌ Роль не найдена.", ephemeral=True)
+            return
+        pirozhok_type = self.pirozhok_type_input.value.strip()
+        if pirozhok_type == "":
+            pirozhok_type = None
+        if pirozhok_type and pirozhok_qty <= 0:
+            await interaction.response.send_message("❌ Если указан тип пирожка, количество должно быть положительным.", ephemeral=True)
+            return
+        if price_coins <= 0 and (not pirozhok_type or pirozhok_qty <= 0):
+            await interaction.response.send_message("❌ Укажите хотя бы один способ оплаты (монеты или пирожки).", ephemeral=True)
+            return
+        add_shop_role(role_id, role.name, price_coins if price_coins > 0 else None, pirozhok_type, pirozhok_qty if pirozhok_qty > 0 else None)
+        embed = discord.Embed(title="✅ Готово", color=discord.Color.green())
+        desc = f"Роль {role.mention} добавлена в магазин."
+        if price_coins > 0:
+            desc += f"\n💰 Цена: {price_coins} {COIN_NAME}"
+        if pirozhok_type and pirozhok_qty > 0:
+            desc += f"\n🥧 Цена: {pirozhok_qty} шт. '{pirozhok_type}'"
+        embed.description = desc
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+class BuyRoleChoiceView(View):
+    def __init__(self, user_id, role_id, role_name, price_coins, pirozhok_type, pirozhok_qty):
+        super().__init__(timeout=60)
         self.user_id = user_id
         self.role_id = role_id
         self.role_name = role_name
+        self.price_coins = price_coins
         self.pirozhok_type = pirozhok_type
-        self.quantity = quantity
-        self.confirm_input = TextInput(label="Подтверждение", placeholder="Введите 'ДА' для покупки", required=True)
-        self.add_item(self.confirm_input)
+        self.pirozhok_qty = pirozhok_qty
 
-    async def on_submit(self, interaction: discord.Interaction):
-        if self.confirm_input.value.strip().upper() != "ДА":
-            await interaction.response.send_message("❌ Покупка отменена.", ephemeral=True)
+    @discord.ui.button(label=f"💰 За {price_coins} {COIN_NAME}", style=discord.ButtonStyle.green, disabled=(price_coins is None or price_coins <= 0))
+    async def buy_coins(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ Это окно не для вас.", ephemeral=True)
             return
-        have = get_pirozhki_quantity(self.user_id, self.pirozhok_type)
-        if have < self.quantity:
-            await interaction.response.send_message(f"❌ У вас недостаточно пирожков '{self.pirozhok_type}'. Нужно {self.quantity}, у вас {have}.", ephemeral=True)
+        bal = get_balance(self.user_id)
+        if bal < self.price_coins:
+            await interaction.response.send_message(f"❌ Недостаточно монет! Нужно {self.price_coins}, у вас {bal}.", ephemeral=True)
             return
         role = interaction.guild.get_role(self.role_id)
         if not role:
-            await interaction.response.send_message("❌ Роль не найдена на сервере.", ephemeral=True)
+            await interaction.response.send_message("❌ Роль больше не существует.", ephemeral=True)
             return
         if role in interaction.user.roles:
             await interaction.response.send_message("❌ У вас уже есть эта роль.", ephemeral=True)
             return
+        update_balance(self.user_id, -self.price_coins)
+        await interaction.user.add_roles(role)
+        embed = discord.Embed(title="✅ Покупка", description=f"Вы купили роль {role.mention} за {self.price_coins} {COIN_NAME}!", color=discord.Color.green())
+        await interaction.response.edit_message(embed=embed, view=None)
+        self.stop()
+
+    @discord.ui.button(label=f"🥧 За {pirozhok_qty} пирожков '{pirozhok_type}'", style=discord.ButtonStyle.blurple, disabled=(pirozhok_type is None or pirozhok_qty <= 0))
+    async def buy_pirozhki(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ Это окно не для вас.", ephemeral=True)
+            return
+        have = get_pirozhki_quantity(self.user_id, self.pirozhok_type)
+        if have < self.pirozhok_qty:
+            await interaction.response.send_message(f"❌ Недостаточно пирожков '{self.pirozhok_type}'! Нужно {self.pirozhok_qty}, у вас {have}.", ephemeral=True)
+            return
+        role = interaction.guild.get_role(self.role_id)
+        if not role:
+            await interaction.response.send_message("❌ Роль больше не существует.", ephemeral=True)
+            return
+        if role in interaction.user.roles:
+            await interaction.response.send_message("❌ У вас уже есть эта роль.", ephemeral=True)
+            return
+        # Получаем recipe_id
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("SELECT id FROM recipes WHERE name = ?", (self.pirozhok_type,))
@@ -319,14 +329,15 @@ class BuyRoleWithPirozhkiModal(Modal):
             await interaction.response.send_message("❌ Ошибка: тип пирожка не найден.", ephemeral=True)
             return
         recipe_id = row[0]
-        if remove_inventory(self.user_id, "pirozhok", recipe_id, self.quantity):
+        if remove_inventory(self.user_id, "pirozhok", recipe_id, self.pirozhok_qty):
             await interaction.user.add_roles(role)
-            embed = discord.Embed(title="✅ Покупка", description=f"Вы купили роль {role.mention} за {self.quantity} пирожков '{self.pirozhok_type}'.", color=discord.Color.green())
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            embed = discord.Embed(title="✅ Покупка", description=f"Вы купили роль {role.mention} за {self.pirozhok_qty} пирожков '{self.pirozhok_type}'!", color=discord.Color.green())
+            await interaction.response.edit_message(embed=embed, view=None)
         else:
-            await interaction.response.send_message("❌ Ошибка при списании пирожков. Попробуйте снова.", ephemeral=True)
+            await interaction.response.send_message("❌ Ошибка при списании пирожков.", ephemeral=True)
+        self.stop()
 
-# ---------- ВСПОМОГАТЕЛЬНЫЕ VIEW ДЛЯ ВЫБОРА ----------
+# ---------- ВСПОМОГАТЕЛЬНЫЕ VIEW ДЛЯ ВЫБОРА (ингредиенты, рецепты, продажа) ----------
 class IngredientSelectView(View):
     def __init__(self, user_id):
         super().__init__(timeout=60)
@@ -414,34 +425,6 @@ class SellPirozhokSelect(Select):
         modal = SellPirozhokModal(interaction.user.id, rec_id, rec[1], sell_price)
         await interaction.response.send_modal(modal)
 
-class PirozhkiShopView(View):
-    def __init__(self, user_id):
-        super().__init__(timeout=60)
-        self.user_id = user_id
-        self.add_item(PirozhkiShopSelect(user_id))
-
-class PirozhkiShopSelect(Select):
-    def __init__(self, user_id):
-        self.user_id = user_id
-        items = get_shop_pirozhki_items()
-        options = []
-        for role_id, role_name, pirozhok_type, qty in items:
-            options.append(discord.SelectOption(label=role_name, description=f"{qty} пирожков '{pirozhok_type}'", value=str(role_id)))
-        super().__init__(placeholder="Выберите роль для покупки", options=options, row=0)
-
-    async def callback(self, interaction: discord.Interaction):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("❌ Это меню не для вас.", ephemeral=True)
-            return
-        role_id = int(self.values[0])
-        item = get_shop_pirozhki_item(role_id)
-        if not item:
-            await interaction.response.send_message("❌ Товар не найден.", ephemeral=True)
-            return
-        role_name, pirozhok_type, qty = item
-        modal = BuyRoleWithPirozhkiModal(interaction.user.id, role_id, role_name, pirozhok_type, qty)
-        await interaction.response.send_modal(modal)
-
 # ---------- ГЛАВНОЕ МЕНЮ С КНОПКАМИ ----------
 class EconomyView(View):
     def __init__(self):
@@ -497,24 +480,28 @@ class EconomyView(View):
         embed.description = desc
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="🛒 Магазин (монеты)", style=discord.ButtonStyle.blurple, row=1)
+    @discord.ui.button(label="🛒 Магазин", style=discord.ButtonStyle.blurple, row=1)
     async def shop_button(self, interaction: discord.Interaction, button: Button):
-        items = get_shop_items()
-        if not items:
-            embed = discord.Embed(title="🛒 Магазин", description="Магазин пуст.", color=discord.Color.red())
+        roles = get_shop_roles()
+        if not roles:
+            embed = discord.Embed(title="🛒 Магазин", description="Магазин пуст. Администратор может добавить товары через кнопку '➕ Добавить роль'.", color=discord.Color.red())
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
-        embed = discord.Embed(title="🛒 Магазин ролей (за монеты)", color=discord.Color.green())
-        for role_id, name, price in items:
+        embed = discord.Embed(title="🛒 Магазин ролей", color=discord.Color.green())
+        for role_id, role_name, price_coins, pirozhok_type, pirozhok_qty in roles:
             role = interaction.guild.get_role(role_id)
-            display_name = role.mention if role else name
-            embed.add_field(name=display_name, value=f"{price} {COIN_NAME}", inline=False)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @discord.ui.button(label="🔨 Купить роль (монеты)", style=discord.ButtonStyle.green, row=1)
-    async def buy_button(self, interaction: discord.Interaction, button: Button):
-        modal = BuyRoleModal(interaction.user.id)
-        await interaction.response.send_modal(modal)
+            display_name = role.mention if role else role_name
+            text = []
+            if price_coins and price_coins > 0:
+                text.append(f"{price_coins} {COIN_NAME}")
+            if pirozhok_type and pirozhok_qty and pirozhok_qty > 0:
+                text.append(f"{pirozhok_qty} пирожков '{pirozhok_type}'")
+            if not text:
+                text.append("Бесплатно? (ошибка)")
+            embed.add_field(name=display_name, value=" или ".join(text), inline=False)
+        # Добавляем кнопку выбора роли для покупки (Select)
+        view = ShopSelectView(interaction.user.id)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     @discord.ui.button(label="🛒 Ингредиенты", style=discord.ButtonStyle.blurple, row=2)
     async def buy_ingredient_button(self, interaction: discord.Interaction, button: Button):
@@ -544,41 +531,100 @@ class EconomyView(View):
         embed = discord.Embed(title="💰 Продажа пирожков", description="Выберите тип пирожка", color=discord.Color.green())
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-    @discord.ui.button(label="🛒 Магазин (пирожки)", style=discord.ButtonStyle.blurple, row=3)
-    async def pirozhki_shop_button(self, interaction: discord.Interaction, button: Button):
-        items = get_shop_pirozhki_items()
-        if not items:
-            embed = discord.Embed(title="🛒 Магазин ролей за пирожки", description="Магазин пуст. Администратор может добавить товары командой `!добавить_товар_пирожки`.", color=discord.Color.red())
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-        embed = discord.Embed(title="🛒 Магазин ролей (за пирожки)", color=discord.Color.purple())
-        for role_id, role_name, pirozhok_type, qty in items:
-            role = interaction.guild.get_role(role_id)
-            display_name = role.mention if role else role_name
-            embed.add_field(name=display_name, value=f"{qty} пирожков '{pirozhok_type}'", inline=False)
-        view = PirozhkiShopView(interaction.user.id)
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-    @discord.ui.button(label="➕ Добавить товар (админ)", style=discord.ButtonStyle.red, row=3)
-    async def add_shop_button(self, interaction: discord.Interaction, button: Button):
-        modal = AddShopItemModal()
+    @discord.ui.button(label="➕ Добавить роль (админ)", style=discord.ButtonStyle.red, row=3)
+    async def add_shop_role_button(self, interaction: discord.Interaction, button: Button):
+        modal = AddShopRoleModal()
         await interaction.response.send_modal(modal)
 
-# ---------- ТЕКСТОВАЯ КОМАНДА ДЛЯ АДМИНИСТРАТОРА (ДОБАВЛЕНИЕ ТОВАРА ЗА ПИРОЖКИ) ----------
-@bot.command(name="добавить_товар_пирожки")
-@commands.has_permissions(administrator=True)
-async def add_pirozhki_shop_item(ctx, role_id: int, pirozhok_type: str, quantity: int):
-    """Добавить роль в магазин за пирожки. Пример: !добавить_товар_пирожки 123456789 'пирожок с картошкой' 5"""
-    role = ctx.guild.get_role(role_id)
-    if not role:
-        await ctx.send("❌ Роль не найдена.")
-        return
-    recipe = get_recipe_by_name(pirozhok_type)
-    if not recipe:
-        await ctx.send(f"❌ Рецепт '{pirozhok_type}' не найден. Доступные: пирожок с картошкой, пирожок с мясом, пирожок с луком и яйцом")
-        return
-    add_shop_pirozhki_item(role_id, role.name, pirozhok_type, quantity)
-    await ctx.send(f"✅ Роль {role.mention} добавлена в магазин за {quantity} пирожков '{pirozhok_type}'.")
+class ShopSelectView(View):
+    def __init__(self, user_id):
+        super().__init__(timeout=60)
+        self.user_id = user_id
+        self.add_item(ShopSelect(user_id))
+
+class ShopSelect(Select):
+    def __init__(self, user_id):
+        self.user_id = user_id
+        roles = get_shop_roles()
+        options = []
+        for role_id, role_name, price_coins, pirozhok_type, pirozhok_qty in roles:
+            label = role_name[:100]
+            description = []
+            if price_coins and price_coins > 0:
+                description.append(f"{price_coins} монет")
+            if pirozhok_type and pirozhok_qty and pirozhok_qty > 0:
+                description.append(f"{pirozhok_qty} пирожков")
+            desc = " или ".join(description) if description else "нет цены"
+            options.append(discord.SelectOption(label=label, description=desc[:100], value=str(role_id)))
+        super().__init__(placeholder="Выберите роль для покупки", options=options, row=0)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ Это меню не для вас.", ephemeral=True)
+            return
+        role_id = int(self.values[0])
+        role_data = get_shop_role(role_id)
+        if not role_data:
+            await interaction.response.send_message("❌ Роль не найдена в магазине.", ephemeral=True)
+            return
+        role_name, price_coins, pirozhok_type, pirozhok_qty = role_data
+        # Проверяем, есть ли хотя бы один способ оплаты
+        if (not price_coins or price_coins <= 0) and (not pirozhok_type or not pirozhok_qty or pirozhok_qty <= 0):
+            await interaction.response.send_message("❌ Эта роль не имеет цены (ошибка конфигурации).", ephemeral=True)
+            return
+        # Если только один способ оплаты, сразу открываем модалку, иначе показываем выбор
+        has_coins = price_coins and price_coins > 0
+        has_pirozhki = pirozhok_type and pirozhok_qty and pirozhok_qty > 0
+        if has_coins and not has_pirozhki:
+            # Сразу покупка за монеты
+            bal = get_balance(interaction.user.id)
+            if bal < price_coins:
+                await interaction.response.send_message(f"❌ Недостаточно монет! Нужно {price_coins}, у вас {bal}.", ephemeral=True)
+                return
+            role = interaction.guild.get_role(role_id)
+            if not role:
+                await interaction.response.send_message("❌ Роль больше не существует.", ephemeral=True)
+                return
+            if role in interaction.user.roles:
+                await interaction.response.send_message("❌ У вас уже есть эта роль.", ephemeral=True)
+                return
+            update_balance(interaction.user.id, -price_coins)
+            await interaction.user.add_roles(role)
+            embed = discord.Embed(title="✅ Покупка", description=f"Вы купили роль {role.mention} за {price_coins} {COIN_NAME}!", color=discord.Color.green())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        elif has_pirozhki and not has_coins:
+            # Сразу покупка за пирожки
+            have = get_pirozhki_quantity(interaction.user.id, pirozhok_type)
+            if have < pirozhok_qty:
+                await interaction.response.send_message(f"❌ Недостаточно пирожков '{pirozhok_type}'! Нужно {pirozhok_qty}, у вас {have}.", ephemeral=True)
+                return
+            role = interaction.guild.get_role(role_id)
+            if not role:
+                await interaction.response.send_message("❌ Роль больше не существует.", ephemeral=True)
+                return
+            if role in interaction.user.roles:
+                await interaction.response.send_message("❌ У вас уже есть эта роль.", ephemeral=True)
+                return
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute("SELECT id FROM recipes WHERE name = ?", (pirozhok_type,))
+            row = c.fetchone()
+            conn.close()
+            if not row:
+                await interaction.response.send_message("❌ Ошибка: тип пирожка не найден.", ephemeral=True)
+                return
+            recipe_id = row[0]
+            if remove_inventory(interaction.user.id, "pirozhok", recipe_id, pirozhok_qty):
+                await interaction.user.add_roles(role)
+                embed = discord.Embed(title="✅ Покупка", description=f"Вы купили роль {role.mention} за {pirozhok_qty} пирожков '{pirozhok_type}'!", color=discord.Color.green())
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Ошибка при списании пирожков.", ephemeral=True)
+        else:
+            # Есть оба способа — показываем выбор
+            view = BuyRoleChoiceView(interaction.user.id, role_id, role_name, price_coins, pirozhok_type, pirozhok_qty)
+            embed = discord.Embed(title=f"Покупка роли {role_name}", description="Выберите способ оплаты:", color=discord.Color.orange())
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 # ---------- СОБЫТИЯ БОТА ----------
 @bot.event
@@ -606,8 +652,8 @@ async def on_ready():
                 "• `Передать` — перевод монет\n\n"
                 "**🥧 Выпечка пирожков:**\n"
                 "• Купите ингредиенты, испеките пирожки по рецептам.\n"
-                "• Пирожки можно продать за монеты или обменять на роли в специальном магазине.\n\n"
-                "**Администратор** может добавлять товары в оба магазина (монеты — кнопкой, пирожки — командой `!добавить_товар_пирожки`)."
+                "• Пирожки можно продать за монеты или обменять на роли в магазине.\n\n"
+                "**Администратор** может добавлять роли в магазин через кнопку **➕ Добавить роль (админ)**."
             ),
             color=discord.Color.gold()
         )
