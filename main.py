@@ -1,13 +1,21 @@
 import discord
 from discord.ext import commands
+from discord.ui import Button, View
 import random
 import os
 from database import *
 
-# --- Конфигурация из переменных окружения ---
+# --- Конфигурация ---
 TOKEN = os.getenv('DISCORD_TOKEN')
 if not TOKEN:
     raise ValueError("Не задана переменная окружения DISCORD_TOKEN")
+
+# ID разрешённого канала (можно задать числом или через переменную окружения)
+ALLOWED_CHANNEL_ID = os.getenv('ALLOWED_CHANNEL_ID')
+if ALLOWED_CHANNEL_ID:
+    ALLOWED_CHANNEL_ID = int(ALLOWED_CHANNEL_ID)
+else:
+    ALLOWED_CHANNEL_ID = None  # если не задан, бот работает во всех каналах
 
 PREFIX = "!"
 DAILY_REWARD = 100
@@ -15,96 +23,242 @@ WORK_MIN = 50
 WORK_MAX = 150
 COIN_NAME = "🪙 монет"
 
-# --- Настройки intents ---
 intents = discord.Intents.default()
 intents.message_content = True
 
 bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 
-# --- Событие запуска ---
-@bot.event
-async def on_ready():
-    print(f"✅ Бот {bot.user} запущен!")
-    init_db()
-    # Добавим пример товара в магазин (замените ROLE_ID на реальный ID роли на вашем сервере)
-    # Можно также добавить через команду администратора, но для демо - раскомментируйте и укажите ID
-    # add_shop_item(123456789012345678, "VIP", 5000)
-    print("База данных инициализирована.")
+# ---------- Глобальная проверка канала ----------
+def is_allowed_channel(ctx):
+    if ALLOWED_CHANNEL_ID is None:
+        return True
+    return ctx.channel.id == ALLOWED_CHANNEL_ID
 
-# --- Команды ---
-@bot.command()
-async def balance(ctx, member: discord.Member = None):
-    """Показать баланс"""
+# Проверка перед каждой командой
+@bot.before_invoke
+async def before_invoke(ctx):
+    if not is_allowed_channel(ctx):
+        embed = discord.Embed(
+            title="⛔ Недоступно",
+            description=f"Этот бот работает только в канале <#{ALLOWED_CHANNEL_ID}>.",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed, delete_after=5)
+        raise commands.CommandError("Команда заблокирована: не тот канал")
+
+# ---------- Вспомогательные классы кнопок (без изменений) ----------
+class DailyView(View):
+    def __init__(self, user_id):
+        super().__init__(timeout=60)
+        self.user_id = user_id
+
+    @discord.ui.button(label="Забрать", style=discord.ButtonStyle.green)
+    async def daily_button(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ Эта кнопка не для вас!", ephemeral=True)
+            return
+        if not can_daily(self.user_id):
+            await interaction.response.send_message("❌ Вы уже получали ежедневный бонус сегодня!", ephemeral=True)
+            return
+        update_balance(self.user_id, DAILY_REWARD)
+        set_daily(self.user_id)
+        embed = discord.Embed(
+            title="🎁 Ежедневный бонус",
+            description=f"Вы получили **{DAILY_REWARD}** {COIN_NAME}!",
+            color=discord.Color.green()
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+        self.stop()
+
+class WorkView(View):
+    def __init__(self, user_id):
+        super().__init__(timeout=60)
+        self.user_id = user_id
+
+    @discord.ui.button(label="💼 Поработать", style=discord.ButtonStyle.blurple)
+    async def work_button(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ Эта кнопка не для вас!", ephemeral=True)
+            return
+        earnings = random.randint(WORK_MIN, WORK_MAX)
+        update_balance(self.user_id, earnings)
+        embed = discord.Embed(
+            title="💼 Работа",
+            description=f"Вы поработали и заработали **{earnings}** {COIN_NAME}!",
+            color=discord.Color.blue()
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+        self.stop()
+
+class FlipView(View):
+    def __init__(self, user_id, bet):
+        super().__init__(timeout=60)
+        self.user_id = user_id
+        self.bet = bet
+
+    @discord.ui.button(label="🦅 Орёл", style=discord.ButtonStyle.primary)
+    async def eagle_button(self, interaction: discord.Interaction, button: Button):
+        await self.process_flip(interaction, "орёл")
+
+    @discord.ui.button(label="🪙 Решка", style=discord.ButtonStyle.primary)
+    async def tails_button(self, interaction: discord.Interaction, button: Button):
+        await self.process_flip(interaction, "решка")
+
+    async def process_flip(self, interaction: discord.Interaction, choice):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ Эта кнопка не для вас!", ephemeral=True)
+            return
+        result = random.choice(["орёл", "решка"])
+        win = (choice == result)
+        embed = discord.Embed(title="🎲 Подбрасываем монетку...", color=discord.Color.gold())
+        embed.add_field(name="Ваш выбор", value=choice, inline=True)
+        embed.add_field(name="Результат", value=result, inline=True)
+        if win:
+            update_balance(self.user_id, self.bet)
+            new_balance = get_balance(self.user_id)
+            embed.add_field(name="💰 Вы выиграли!", value=f"+{self.bet} {COIN_NAME}", inline=False)
+            embed.set_footer(text=f"Новый баланс: {new_balance} {COIN_NAME}")
+            color = discord.Color.green()
+        else:
+            update_balance(self.user_id, -self.bet)
+            new_balance = get_balance(self.user_id)
+            embed.add_field(name="😢 Вы проиграли!", value=f"-{self.bet} {COIN_NAME}", inline=False)
+            embed.set_footer(text=f"Новый баланс: {new_balance} {COIN_NAME}")
+            color = discord.Color.red()
+        embed.color = color
+        await interaction.response.edit_message(embed=embed, view=None)
+        self.stop()
+
+class ConfirmTransferView(View):
+    def __init__(self, sender_id, receiver_id, amount):
+        super().__init__(timeout=60)
+        self.sender_id = sender_id
+        self.receiver_id = receiver_id
+        self.amount = amount
+
+    @discord.ui.button(label="✅ Да, передать", style=discord.ButtonStyle.green)
+    async def confirm_button(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.sender_id:
+            await interaction.response.send_message("❌ Это не ваша транзакция!", ephemeral=True)
+            return
+        if get_balance(self.sender_id) < self.amount:
+            await interaction.response.edit_message(content="❌ Недостаточно средств! Транзакция отменена.", embed=None, view=None)
+            self.stop()
+            return
+        update_balance(self.sender_id, -self.amount)
+        update_balance(self.receiver_id, self.amount)
+        embed = discord.Embed(
+            title="✅ Перевод выполнен",
+            description=f"Вы передали **{self.amount}** {COIN_NAME} пользователю <@{self.receiver_id}>",
+            color=discord.Color.green()
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+        self.stop()
+
+    @discord.ui.button(label="❌ Отмена", style=discord.ButtonStyle.red)
+    async def cancel_button(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.sender_id:
+            await interaction.response.send_message("❌ Это не ваша транзакция!", ephemeral=True)
+            return
+        embed = discord.Embed(
+            title="❌ Перевод отменён",
+            description="Вы отменили передачу монет.",
+            color=discord.Color.dark_red()
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+        self.stop()
+
+# ---------- Команды (без изменений, но с русскими именами) ----------
+@bot.command(name="баланс", aliases=["balance"])
+async def balance_cmd(ctx, member: discord.Member = None):
     if member is None:
         member = ctx.author
     bal = get_balance(member.id)
-    await ctx.send(f"💰 Баланс {member.mention}: {bal} {COIN_NAME}")
+    embed = discord.Embed(
+        title="💰 Баланс",
+        description=f"Баланс {member.mention}: **{bal}** {COIN_NAME}",
+        color=discord.Color.blurple()
+    )
+    await ctx.send(embed=embed)
 
-@bot.command()
-async def daily(ctx):
-    """Ежедневный бонус"""
-    user_id = ctx.author.id
-    if not can_daily(user_id):
-        await ctx.send(f"❌ {ctx.author.mention}, вы уже получали ежедневный бонус сегодня!")
+@bot.command(name="ежедневный", aliases=["daily"])
+async def daily_cmd(ctx):
+    if not can_daily(ctx.author.id):
+        embed = discord.Embed(
+            title="❌ Ошибка",
+            description="Вы уже получали ежедневный бонус сегодня!",
+            color=discord.Color.red()
+        )
+        await ctx.send(embed=embed)
         return
-    update_balance(user_id, DAILY_REWARD)
-    set_daily(user_id)
-    await ctx.send(f"🎁 {ctx.author.mention}, вы получили {DAILY_REWARD} {COIN_NAME}!")
+    embed = discord.Embed(
+        title="🎁 Ежедневный бонус",
+        description=f"Нажмите на кнопку ниже, чтобы получить **{DAILY_REWARD}** {COIN_NAME}.",
+        color=discord.Color.gold()
+    )
+    view = DailyView(ctx.author.id)
+    await ctx.send(embed=embed, view=view)
 
-@bot.command()
-async def work(ctx):
-    """Случайный заработок"""
-    earnings = random.randint(WORK_MIN, WORK_MAX)
-    update_balance(ctx.author.id, earnings)
-    await ctx.send(f"💼 {ctx.author.mention}, вы поработали и заработали {earnings} {COIN_NAME}!")
+@bot.command(name="работать", aliases=["work"])
+async def work_cmd(ctx):
+    embed = discord.Embed(
+        title="💼 Работа",
+        description=f"Нажмите кнопку, чтобы поработать и получить от {WORK_MIN} до {WORK_MAX} {COIN_NAME}.",
+        color=discord.Color.blue()
+    )
+    view = WorkView(ctx.author.id)
+    await ctx.send(embed=embed, view=view)
 
-@bot.command()
-async def give(ctx, member: discord.Member, amount: int):
-    """Передать монеты"""
+@bot.command(name="передать", aliases=["give"])
+async def give_cmd(ctx, member: discord.Member, amount: int):
     if amount <= 0:
-        await ctx.send("Сумма должна быть положительной!")
+        embed = discord.Embed(title="❌ Ошибка", description="Сумма должна быть положительной!", color=discord.Color.red())
+        await ctx.send(embed=embed)
         return
     if member == ctx.author:
-        await ctx.send("Нельзя передавать монеты самому себе!")
+        embed = discord.Embed(title="❌ Ошибка", description="Нельзя передавать монеты самому себе!", color=discord.Color.red())
+        await ctx.send(embed=embed)
         return
     sender_bal = get_balance(ctx.author.id)
     if sender_bal < amount:
-        await ctx.send(f"❌ Недостаточно средств! У вас {sender_bal} {COIN_NAME}.")
+        embed = discord.Embed(title="❌ Ошибка", description=f"Недостаточно средств! У вас {sender_bal} {COIN_NAME}.", color=discord.Color.red())
+        await ctx.send(embed=embed)
         return
-    update_balance(ctx.author.id, -amount)
-    update_balance(member.id, amount)
-    await ctx.send(f"✅ {ctx.author.mention} передал {amount} {COIN_NAME} пользователю {member.mention}!")
+    embed = discord.Embed(
+        title="💰 Подтверждение перевода",
+        description=f"Вы собираетесь передать **{amount}** {COIN_NAME} пользователю {member.mention}.\nНажмите **✅ Да, передать** для подтверждения.",
+        color=discord.Color.orange()
+    )
+    view = ConfirmTransferView(ctx.author.id, member.id, amount)
+    await ctx.send(embed=embed, view=view)
 
-@bot.command()
-async def flip(ctx, bet: int):
-    """Орёл или решка"""
+@bot.command(name="монетка", aliases=["flip"])
+async def flip_cmd(ctx, bet: int):
     if bet <= 0:
-        await ctx.send("Ставка должна быть положительной!")
+        embed = discord.Embed(title="❌ Ошибка", description="Ставка должна быть положительной!", color=discord.Color.red())
+        await ctx.send(embed=embed)
         return
     bal = get_balance(ctx.author.id)
     if bal < bet:
-        await ctx.send(f"Недостаточно монет! Ваш баланс: {bal}")
+        embed = discord.Embed(title="❌ Ошибка", description=f"Недостаточно монет! Ваш баланс: {bal} {COIN_NAME}.", color=discord.Color.red())
+        await ctx.send(embed=embed)
         return
-    result = random.choice(["орёл", "решка"])
-    embed = discord.Embed(title="🎲 Подбрасываем монетку...", color=discord.Color.gold())
-    embed.add_field(name="Результат", value=f"Выпал **{result}**!", inline=False)
-    if result == "орёл":
-        update_balance(ctx.author.id, bet)   # выигрыш = ставка (чистая прибыль)
-        embed.add_field(name="💰 Вы выиграли!", value=f"+{bet} {COIN_NAME}", inline=False)
-    else:
-        update_balance(ctx.author.id, -bet)
-        embed.add_field(name="😢 Вы проиграли!", value=f"-{bet} {COIN_NAME}", inline=False)
-    embed.set_footer(text=f"Ваш новый баланс: {get_balance(ctx.author.id)} {COIN_NAME}")
-    await ctx.send(embed=embed)
+    embed = discord.Embed(
+        title="🎲 Орёл или решка?",
+        description=f"Ставка: **{bet}** {COIN_NAME}\nВыберите сторону, нажав на кнопку.",
+        color=discord.Color.gold()
+    )
+    view = FlipView(ctx.author.id, bet)
+    await ctx.send(embed=embed, view=view)
 
-@bot.command()
-async def top(ctx, limit: int = 10):
-    """Топ богачей"""
+@bot.command(name="топ", aliases=["top"])
+async def top_cmd(ctx, limit: int = 10):
     if limit > 25:
         limit = 25
     rows = get_top_balances(limit)
     if not rows:
-        await ctx.send("Нет данных.")
+        embed = discord.Embed(title="🏆 Таблица лидеров", description="Нет данных.", color=discord.Color.blue())
+        await ctx.send(embed=embed)
         return
     embed = discord.Embed(title="🏆 Таблица лидеров", color=discord.Color.blue())
     desc = ""
@@ -115,16 +269,12 @@ async def top(ctx, limit: int = 10):
     embed.description = desc
     await ctx.send(embed=embed)
 
-@bot.command()
-async def shop(ctx):
-    """Показать магазин"""
-    conn = sqlite3.connect("economy.db")
-    c = conn.cursor()
-    c.execute("SELECT role_id, role_name, price FROM shop")
-    items = c.fetchall()
-    conn.close()
+@bot.command(name="магазин", aliases=["shop"])
+async def shop_cmd(ctx):
+    items = get_shop_items()
     if not items:
-        await ctx.send("Магазин пуст. Администратор может добавить товары через команду `add_shop_item`.")
+        embed = discord.Embed(title="🛒 Магазин", description="Магазин пуст. Администратор может добавить товары командой `!добавить_товар`.", color=discord.Color.red())
+        await ctx.send(embed=embed)
         return
     embed = discord.Embed(title="🛒 Магазин ролей", color=discord.Color.green())
     for role_id, name, price in items:
@@ -133,56 +283,72 @@ async def shop(ctx):
         embed.add_field(name=display_name, value=f"{price} {COIN_NAME}", inline=False)
     await ctx.send(embed=embed)
 
-@bot.command()
+@bot.command(name="добавить_товар", aliases=["add_shop_item"])
 @commands.has_permissions(administrator=True)
-async def add_shop_item(ctx, role_id: int, price: int):
-    """(Админ) Добавить роль в магазин"""
+async def add_shop_item_cmd(ctx, role_id: int, price: int):
     role = ctx.guild.get_role(role_id)
     if not role:
-        await ctx.send("Роль с таким ID не найдена на этом сервере.")
+        embed = discord.Embed(title="❌ Ошибка", description="Роль с таким ID не найдена на этом сервере.", color=discord.Color.red())
+        await ctx.send(embed=embed)
         return
     add_shop_item(role_id, role.name, price)
-    await ctx.send(f"✅ Роль {role.mention} добавлена в магазин за {price} {COIN_NAME}.")
+    embed = discord.Embed(title="✅ Готово", description=f"Роль {role.mention} добавлена в магазин за {price} {COIN_NAME}.", color=discord.Color.green())
+    await ctx.send(embed=embed)
 
-@bot.command()
-async def buy(ctx, role_id: int):
-    """Купить роль по ID"""
-    conn = sqlite3.connect("economy.db")
-    c = conn.cursor()
-    c.execute("SELECT role_name, price FROM shop WHERE role_id = ?", (role_id,))
-    item = c.fetchone()
-    conn.close()
+@bot.command(name="купить", aliases=["buy"])
+async def buy_cmd(ctx, role_id: int):
+    item = get_shop_item(role_id)
     if not item:
-        await ctx.send("Товар не найден.")
+        embed = discord.Embed(title="❌ Ошибка", description="Товар не найден.", color=discord.Color.red())
+        await ctx.send(embed=embed)
         return
     role = ctx.guild.get_role(role_id)
     if not role:
-        await ctx.send("Роль не существует на этом сервере.")
+        embed = discord.Embed(title="❌ Ошибка", description="Роль не существует на этом сервере.", color=discord.Color.red())
+        await ctx.send(embed=embed)
         return
     price = item[1]
     bal = get_balance(ctx.author.id)
     if bal < price:
-        await ctx.send(f"Недостаточно монет! Нужно {price}, у вас {bal}.")
+        embed = discord.Embed(title="❌ Ошибка", description=f"Недостаточно монет! Нужно {price}, у вас {bal}.", color=discord.Color.red())
+        await ctx.send(embed=embed)
         return
     if role in ctx.author.roles:
-        await ctx.send("У вас уже есть эта роль.")
+        embed = discord.Embed(title="❌ Ошибка", description="У вас уже есть эта роль.", color=discord.Color.red())
+        await ctx.send(embed=embed)
         return
     update_balance(ctx.author.id, -price)
     await ctx.author.add_roles(role)
-    await ctx.send(f"✅ Вы купили роль {role.mention} за {price} {COIN_NAME}!")
+    embed = discord.Embed(title="✅ Покупка", description=f"Вы купили роль {role.mention} за {price} {COIN_NAME}!", color=discord.Color.green())
+    await ctx.send(embed=embed)
 
-# --- Обработчик ошибок ---
+# ---------- Обработчик ошибок ----------
 @bot.event
 async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandError) and str(error) == "Команда заблокирована: не тот канал":
+        # сообщение уже отправлено в before_invoke, ничего не делаем
+        return
     if isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send(f"Не хватает аргумента. Используйте `{ctx.prefix}help {ctx.command.name}`")
+        embed = discord.Embed(title="❌ Ошибка", description=f"Не хватает аргумента. Используйте `{ctx.prefix}help {ctx.command.name}`", color=discord.Color.red())
+        await ctx.send(embed=embed)
     elif isinstance(error, commands.BadArgument):
-        await ctx.send("Неверный аргумент (например, пользователь не найден).")
+        embed = discord.Embed(title="❌ Ошибка", description="Неверный аргумент (например, пользователь не найден).", color=discord.Color.red())
+        await ctx.send(embed=embed)
     elif isinstance(error, commands.MissingPermissions):
-        await ctx.send("У вас недостаточно прав для выполнения этой команды.")
+        embed = discord.Embed(title="❌ Ошибка", description="У вас недостаточно прав для выполнения этой команды.", color=discord.Color.red())
+        await ctx.send(embed=embed)
     else:
-        await ctx.send(f"Произошла ошибка: {error}")
+        embed = discord.Embed(title="❌ Ошибка", description=f"Произошла ошибка: {error}", color=discord.Color.red())
+        await ctx.send(embed=embed)
 
-# --- Запуск ---
+@bot.event
+async def on_ready():
+    print(f"✅ Бот {bot.user} запущен!")
+    init_db()
+    if ALLOWED_CHANNEL_ID:
+        print(f"Бот работает только в канале {ALLOWED_CHANNEL_ID}")
+    else:
+        print("Бот работает во всех каналах")
+
 if __name__ == "__main__":
     bot.run(TOKEN)
