@@ -11,15 +11,13 @@ def init_db():
                  (user_id INTEGER PRIMARY KEY,
                   balance INTEGER DEFAULT 0,
                   last_daily TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS shop
+    # Единая таблица магазина
+    c.execute('''CREATE TABLE IF NOT EXISTS shop_roles
                  (role_id INTEGER PRIMARY KEY,
                   role_name TEXT,
-                  price INTEGER)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS shop_pirozhki
-                 (role_id INTEGER PRIMARY KEY,
-                  role_name TEXT,
-                  pirozhok_type TEXT,
-                  quantity INTEGER)''')
+                  price_coins INTEGER,
+                  price_pirozhki_type TEXT,
+                  price_pirozhki_qty INTEGER)''')
     c.execute('''CREATE TABLE IF NOT EXISTS ingredients
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   name TEXT UNIQUE,
@@ -106,54 +104,39 @@ def get_top_balances(limit=10):
     conn.close()
     return rows
 
-def add_shop_item(role_id, role_name, price):
+# --- Функции единого магазина ---
+def add_shop_role(role_id, role_name, price_coins=None, price_pirozhki_type=None, price_pirozhki_qty=None):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO shop (role_id, role_name, price) VALUES (?, ?, ?)",
-              (role_id, role_name, price))
+    c.execute("INSERT OR REPLACE INTO shop_roles (role_id, role_name, price_coins, price_pirozhki_type, price_pirozhki_qty) VALUES (?, ?, ?, ?, ?)",
+              (role_id, role_name, price_coins, price_pirozhki_type, price_pirozhki_qty))
     conn.commit()
     conn.close()
 
-def get_shop_items():
+def get_shop_roles():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT role_id, role_name, price FROM shop")
-    items = c.fetchall()
+    c.execute("SELECT role_id, role_name, price_coins, price_pirozhki_type, price_pirozhki_qty FROM shop_roles")
+    rows = c.fetchall()
     conn.close()
-    return items
+    return rows
 
-def get_shop_item(role_id):
+def get_shop_role(role_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT role_name, price FROM shop WHERE role_id = ?", (role_id,))
-    item = c.fetchone()
+    c.execute("SELECT role_name, price_coins, price_pirozhki_type, price_pirozhki_qty FROM shop_roles WHERE role_id = ?", (role_id,))
+    row = c.fetchone()
     conn.close()
-    return item
+    return row
 
-def add_shop_pirozhki_item(role_id, role_name, pirozhok_type, quantity):
+def delete_shop_role(role_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO shop_pirozhki (role_id, role_name, pirozhok_type, quantity) VALUES (?, ?, ?, ?)",
-              (role_id, role_name, pirozhok_type, quantity))
+    c.execute("DELETE FROM shop_roles WHERE role_id = ?", (role_id,))
     conn.commit()
     conn.close()
 
-def get_shop_pirozhki_items():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT role_id, role_name, pirozhok_type, quantity FROM shop_pirozhki")
-    items = c.fetchall()
-    conn.close()
-    return items
-
-def get_shop_pirozhki_item(role_id):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT role_name, pirozhok_type, quantity FROM shop_pirozhki WHERE role_id = ?", (role_id,))
-    item = c.fetchone()
-    conn.close()
-    return item
-
+# --- Функции ингредиентов, рецептов, инвентаря ---
 def get_all_ingredients():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
