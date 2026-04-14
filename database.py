@@ -11,7 +11,6 @@ def init_db():
                  (user_id INTEGER PRIMARY KEY,
                   balance INTEGER DEFAULT 0,
                   last_daily TEXT)''')
-    # Единая таблица магазина
     c.execute('''CREATE TABLE IF NOT EXISTS shop_roles
                  (role_id INTEGER PRIMARY KEY,
                   role_name TEXT,
@@ -35,7 +34,6 @@ def init_db():
                   PRIMARY KEY (user_id, item_type, item_id))''')
     conn.commit()
 
-    # Заполнение начальными данными
     c.execute("SELECT COUNT(*) FROM ingredients")
     if c.fetchone()[0] == 0:
         ingredients = [
@@ -104,7 +102,6 @@ def get_top_balances(limit=10):
     conn.close()
     return rows
 
-# --- Функции единого магазина ---
 def add_shop_role(role_id, role_name, price_coins=None, price_pirozhki_type=None, price_pirozhki_qty=None):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -129,14 +126,6 @@ def get_shop_role(role_id):
     conn.close()
     return row
 
-def delete_shop_role(role_id):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("DELETE FROM shop_roles WHERE role_id = ?", (role_id,))
-    conn.commit()
-    conn.close()
-
-# --- Функции ингредиентов, рецептов, инвентаря ---
 def get_all_ingredients():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -144,14 +133,6 @@ def get_all_ingredients():
     rows = c.fetchall()
     conn.close()
     return rows
-
-def get_ingredient_price(ingredient_name):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT price FROM ingredients WHERE name = ?", (ingredient_name,))
-    row = c.fetchone()
-    conn.close()
-    return row[0] if row else None
 
 def get_all_recipes():
     conn = sqlite3.connect(DB_PATH)
@@ -197,17 +178,6 @@ def remove_inventory(user_id, item_type, item_id, quantity):
     conn.commit()
     conn.close()
     return True
-
-def get_inventory(user_id, item_type=None):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    if item_type:
-        c.execute("SELECT item_id, quantity FROM user_inventory WHERE user_id = ? AND item_type = ?", (user_id, item_type))
-    else:
-        c.execute("SELECT item_type, item_id, quantity FROM user_inventory WHERE user_id = ?", (user_id,))
-    rows = c.fetchall()
-    conn.close()
-    return rows
 
 def get_ingredient_quantity(user_id, ingredient_name):
     conn = sqlite3.connect(DB_PATH)
