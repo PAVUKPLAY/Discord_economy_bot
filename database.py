@@ -7,42 +7,37 @@ DB_PATH = "economy.db"
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    # Таблица пользователей (баланс монет и время ежедневного бонуса)
     c.execute('''CREATE TABLE IF NOT EXISTS users
                  (user_id INTEGER PRIMARY KEY,
                   balance INTEGER DEFAULT 0,
                   last_daily TEXT)''')
-    # Таблица магазина ролей за монеты
     c.execute('''CREATE TABLE IF NOT EXISTS shop
                  (role_id INTEGER PRIMARY KEY,
                   role_name TEXT,
                   price INTEGER)''')
-    # Таблица магазина ролей за пирожки (дополнительно)
     c.execute('''CREATE TABLE IF NOT EXISTS shop_pirozhki
                  (role_id INTEGER PRIMARY KEY,
                   role_name TEXT,
-                  pirozhok_type TEXT,  -- тип пирожка (картошка, мясо, лук_яйцо)
-                  quantity INTEGER)''')  -- сколько пирожков нужно
-    # Таблица ингредиентов
+                  pirozhok_type TEXT,
+                  quantity INTEGER)''')
     c.execute('''CREATE TABLE IF NOT EXISTS ingredients
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   name TEXT UNIQUE,
                   price INTEGER)''')
-    # Таблица рецептов пирожков
     c.execute('''CREATE TABLE IF NOT EXISTS recipes
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   name TEXT UNIQUE,
-                  ingredients TEXT,  -- JSON словарь {ингредиент: количество}
+                  ingredients TEXT,
                   sell_price INTEGER)''')
-    # Таблица инвентаря (универсальная)
     c.execute('''CREATE TABLE IF NOT EXISTS user_inventory
                  (user_id INTEGER,
-                  item_type TEXT,   -- 'ingredient' или 'pirozhok'
-                  item_id INTEGER,  -- id ингредиента или рецепта
+                  item_type TEXT,
+                  item_id INTEGER,
                   quantity INTEGER,
                   PRIMARY KEY (user_id, item_type, item_id))''')
     conn.commit()
-    # Заполняем начальными данными, если пусто
+
+    # Заполнение начальными данными
     c.execute("SELECT COUNT(*) FROM ingredients")
     if c.fetchone()[0] == 0:
         ingredients = [
@@ -65,7 +60,6 @@ def init_db():
     conn.commit()
     conn.close()
 
-# ---------- Баланс монет ----------
 def get_balance(user_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -83,7 +77,6 @@ def update_balance(user_id, amount):
     conn.commit()
     conn.close()
 
-# ---------- Ежедневный бонус ----------
 def can_daily(user_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -105,7 +98,6 @@ def set_daily(user_id):
     conn.commit()
     conn.close()
 
-# ---------- Топ монет ----------
 def get_top_balances(limit=10):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -114,7 +106,6 @@ def get_top_balances(limit=10):
     conn.close()
     return rows
 
-# ---------- Магазин ролей за монеты ----------
 def add_shop_item(role_id, role_name, price):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -139,7 +130,6 @@ def get_shop_item(role_id):
     conn.close()
     return item
 
-# ---------- Магазин ролей за пирожки ----------
 def add_shop_pirozhki_item(role_id, role_name, pirozhok_type, quantity):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -164,14 +154,13 @@ def get_shop_pirozhki_item(role_id):
     conn.close()
     return item
 
-# ---------- Ингредиенты ----------
 def get_all_ingredients():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT id, name, price FROM ingredients ORDER BY name")
     rows = c.fetchall()
     conn.close()
-    return rows  # [(id, name, price), ...]
+    return rows
 
 def get_ingredient_price(ingredient_name):
     conn = sqlite3.connect(DB_PATH)
@@ -181,14 +170,13 @@ def get_ingredient_price(ingredient_name):
     conn.close()
     return row[0] if row else None
 
-# ---------- Рецепты ----------
 def get_all_recipes():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT id, name, ingredients, sell_price FROM recipes")
     rows = c.fetchall()
     conn.close()
-    return rows  # [(id, name, ingredients_json, sell_price), ...]
+    return rows
 
 def get_recipe_by_name(name):
     conn = sqlite3.connect(DB_PATH)
@@ -198,7 +186,6 @@ def get_recipe_by_name(name):
     conn.close()
     return row
 
-# ---------- Инвентарь ----------
 def add_inventory(user_id, item_type, item_id, quantity):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -240,7 +227,6 @@ def get_inventory(user_id, item_type=None):
     return rows
 
 def get_ingredient_quantity(user_id, ingredient_name):
-    # Получаем id ингредиента по имени
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT id FROM ingredients WHERE name = ?", (ingredient_name,))
@@ -271,7 +257,6 @@ def get_pirozhki_quantity(user_id, recipe_name):
     return row[0] if row else 0
 
 def get_all_pirozhki(user_id):
-    """Возвращает словарь {название_пирожка: количество}"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''SELECT r.name, inv.quantity FROM user_inventory inv
