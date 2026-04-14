@@ -23,9 +23,7 @@ def get_balance(user_id):
     c.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
     row = c.fetchone()
     conn.close()
-    if row is None:
-        return 0
-    return row[0]
+    return row[0] if row else 0
 
 def update_balance(user_id, amount):
     conn = sqlite3.connect(DB_PATH)
@@ -82,7 +80,6 @@ def add_shop_item(role_id, role_name, price):
     conn.commit()
     conn.close()
 
-# Новые функции для удобства работы с магазином
 def get_shop_items():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
