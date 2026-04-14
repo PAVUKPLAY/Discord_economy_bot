@@ -281,8 +281,17 @@ class BuyRoleChoiceView(View):
         self.pirozhok_type = pirozhok_type
         self.pirozhok_qty = pirozhok_qty
 
-    @discord.ui.button(label=f"💰 За {price_coins} {COIN_NAME}", style=discord.ButtonStyle.green, disabled=(price_coins is None or price_coins <= 0))
-    async def buy_coins(self, interaction: discord.Interaction, button: Button):
+        if price_coins and price_coins > 0:
+            btn_coins = Button(label=f"💰 За {price_coins} {COIN_NAME}", style=discord.ButtonStyle.green)
+            btn_coins.callback = self.buy_coins
+            self.add_item(btn_coins)
+
+        if pirozhok_type and pirozhok_qty and pirozhok_qty > 0:
+            btn_pirozhki = Button(label=f"🥧 За {pirozhok_qty} пирожков '{pirozhok_type}'", style=discord.ButtonStyle.blurple)
+            btn_pirozhki.callback = self.buy_pirozhki
+            self.add_item(btn_pirozhki)
+
+    async def buy_coins(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("❌ Это окно не для вас.", ephemeral=True)
             return
@@ -303,8 +312,7 @@ class BuyRoleChoiceView(View):
         await interaction.response.edit_message(embed=embed, view=None)
         self.stop()
 
-    @discord.ui.button(label=f"🥧 За {pirozhok_qty} пирожков '{pirozhok_type}'", style=discord.ButtonStyle.blurple, disabled=(pirozhok_type is None or pirozhok_qty <= 0))
-    async def buy_pirozhki(self, interaction: discord.Interaction, button: Button):
+    async def buy_pirozhki(self, interaction: discord.Interaction):
         if interaction.user.id != self.user_id:
             await interaction.response.send_message("❌ Это окно не для вас.", ephemeral=True)
             return
@@ -319,7 +327,6 @@ class BuyRoleChoiceView(View):
         if role in interaction.user.roles:
             await interaction.response.send_message("❌ У вас уже есть эта роль.", ephemeral=True)
             return
-        # Получаем recipe_id
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("SELECT id FROM recipes WHERE name = ?", (self.pirozhok_type,))
