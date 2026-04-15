@@ -18,14 +18,78 @@ if not ALLOWED_CHANNEL_ID:
     raise ValueError("Не задан ALLOWED_CHANNEL_ID")
 ALLOWED_CHANNEL_ID = int(ALLOWED_CHANNEL_ID)
 
+ADMIN_CHANNEL_ID = os.getenv('ADMIN_CHANNEL_ID')
+if ADMIN_CHANNEL_ID:
+    ADMIN_CHANNEL_ID = int(ADMIN_CHANNEL_ID)
+else:
+    ADMIN_CHANNEL_ID = None
+
 DAILY_REWARD = 100
-WORK_MIN = 50
-WORK_MAX = 150
 COIN_NAME = "🪙 монет"
 
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+# ---------- ГЕНЕРАЦИЯ МАТЕМАТИЧЕСКОЙ ЗАДАЧИ ----------
+def generate_math_problem():
+    operators = ['+', '-', '*']
+    op = random.choice(operators)
+    if op == '+':
+        a = random.randint(1, 10)
+        b = random.randint(1, 10)
+        answer = a + b
+        question = f"{a} + {b}"
+    elif op == '-':
+        a = random.randint(1, 10)
+        b = random.randint(1, a)
+        answer = a - b
+        question = f"{a} - {b}"
+    else:  # *
+        a = random.randint(1, 5)
+        b = random.randint(1, 5)
+        answer = a * b
+        question = f"{a} * {b}"
+    # Генерируем 3 варианта ответа (один правильный, два случайных)
+    options = [answer]
+    while len(options) < 3:
+        fake = answer + random.randint(-3, 3)
+        if fake != answer and fake not in options and fake >= 0:
+            options.append(fake)
+    random.shuffle(options)
+    return question, answer, options
+
+# ---------- КЛАСС ДЛЯ РАБОТЫ (МАТЕМАТИЧЕСКАЯ ЗАДАЧА) ----------
+class MathProblemView(View):
+    def __init__(self, user_id, question, answer, options, reward):
+        super().__init__(timeout=60)
+        self.user_id = user_id
+        self.answer = answer
+        self.reward = reward
+        self.answered = False
+        for opt in options:
+            btn = Button(label=str(opt), style=discord.ButtonStyle.primary)
+            btn.callback = self.make_callback(opt)
+            self.add_item(btn)
+
+    def make_callback(self, option):
+        async def callback(interaction: discord.Interaction):
+            if self.answered:
+                await interaction.response.send_message("❌ Вы уже ответили на этот вопрос.", ephemeral=True)
+                return
+            if interaction.user.id != self.user_id:
+                await interaction.response.send_message("❌ Это задание не для вас.", ephemeral=True)
+                return
+            self.answered = True
+            if option == self.answer:
+                update_balance(self.user_id, self.reward)
+                embed = discord.Embed(title="✅ Правильно!", description=f"Вы получили {self.reward} {COIN_NAME}!", color=discord.Color.green())
+                await interaction.response.edit_message(embed=embed, view=None)
+            else:
+                embed = discord.Embed(title="❌ Неправильно!", description=f"Правильный ответ: {self.answer}. Вы не получили монет.", color=discord.Color.red())
+                await interaction.response.edit_message(embed=embed, view=None)
+            self.stop()
+        return callback
 
 # ---------- МОДАЛЬНЫЕ ОКНА (базовые) ----------
 class TransferModal(Modal):
@@ -45,7 +109,7 @@ class TransferModal(Modal):
             try:
                 receiver_id = int(receiver_text)
             except ValueError:
-                await interaction.response.send_message("❌ Неверный формат получателя. Укажите ID или упоминание.", ephemeral=True)
+                await interaction.response.send_message("❌ Неверный формат получателя.", ephemeral=True)
                 return
         try:
             amount = int(self.amount_input.value)
@@ -56,7 +120,7 @@ class TransferModal(Modal):
             await interaction.response.send_message("❌ Сумма должна быть положительной.", ephemeral=True)
             return
         if receiver_id == self.sender_id:
-            await interaction.response.send_message("❌ Нельзя передавать монеты самому себе.", ephemeral=True)
+            await interaction.response.send_message("❌ Нельзя передавать самому себе.", ephemeral=True)
             return
         sender_bal = get_balance(self.sender_id)
         if sender_bal < amount:
@@ -344,7 +408,183 @@ class BuyRoleChoiceView(View):
             await interaction.response.send_message("❌ Ошибка при списании пирожков.", ephemeral=True)
         self.stop()
 
-# ---------- ВСПОМОГАТЕЛЬНЫЕ VIEW ДЛЯ ВЫБОРА (ингредиенты, рецепты, продажа) ----------
+# ---------- АДМИНСКАЯ ПАНЕЛЬ (КНОПКИ) ----------
+class AdminPanelView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="💰 Выдать монеты", style=discord.ButtonStyle.green, row=0)
+    async def give_coins(self, interaction: discord.Interaction, button: Button):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Нет прав.", ephemeral=True)
+            return
+        modal = AdminGiveCoinsModal()
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="💰 Забрать монеты", style=discord.ButtonStyle.red, row=0)
+    async def take_coins(self, interaction: discord.Interaction, button: Button):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Нет прав.", ephemeral=True)
+            return
+        modal = AdminTakeCoinsModal()
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="🥧 Выдать пирожки", style=discord.ButtonStyle.green, row=1)
+    async def give_pirozhki(self, interaction: discord.Interaction, button: Button):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Нет прав.", ephemeral=True)
+            return
+        modal = AdminGivePirozhkiModal()
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="🥧 Забрать пирожки", style=discord.ButtonStyle.red, row=1)
+    async def take_pirozhki(self, interaction: discord.Interaction, button: Button):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Нет прав.", ephemeral=True)
+            return
+        modal = AdminTakePirozhkiModal()
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="⚙️ Настройка зарплаты", style=discord.ButtonStyle.blurple, row=2)
+    async def salary_settings(self, interaction: discord.Interaction, button: Button):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Нет прав.", ephemeral=True)
+            return
+        modal = AdminSalaryModal()
+        await interaction.response.send_modal(modal)
+
+# Модальные окна для админ-панели
+class AdminGiveCoinsModal(Modal):
+    def __init__(self):
+        super().__init__(title="Выдать монеты")
+        self.user_input = TextInput(label="ID пользователя", placeholder="Цифровой ID", required=True)
+        self.amount_input = TextInput(label="Сумма", placeholder="Число", required=True)
+        self.add_item(self.user_input)
+        self.add_item(self.amount_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            user_id = int(self.user_input.value)
+            amount = int(self.amount_input.value)
+        except ValueError:
+            await interaction.response.send_message("❌ ID и сумма должны быть числами.", ephemeral=True)
+            return
+        if amount <= 0:
+            await interaction.response.send_message("❌ Сумма должна быть положительной.", ephemeral=True)
+            return
+        update_balance(user_id, amount)
+        await interaction.response.send_message(f"✅ Выдано {amount} {COIN_NAME} пользователю <@{user_id}>.", ephemeral=True)
+
+class AdminTakeCoinsModal(Modal):
+    def __init__(self):
+        super().__init__(title="Забрать монеты")
+        self.user_input = TextInput(label="ID пользователя", placeholder="Цифровой ID", required=True)
+        self.amount_input = TextInput(label="Сумма", placeholder="Число", required=True)
+        self.add_item(self.user_input)
+        self.add_item(self.amount_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            user_id = int(self.user_input.value)
+            amount = int(self.amount_input.value)
+        except ValueError:
+            await interaction.response.send_message("❌ ID и сумма должны быть числами.", ephemeral=True)
+            return
+        if amount <= 0:
+            await interaction.response.send_message("❌ Сумма должна быть положительной.", ephemeral=True)
+            return
+        current = get_balance(user_id)
+        if current < amount:
+            await interaction.response.send_message(f"❌ У пользователя только {current} {COIN_NAME}.", ephemeral=True)
+            return
+        update_balance(user_id, -amount)
+        await interaction.response.send_message(f"✅ Забрано {amount} {COIN_NAME} у пользователя <@{user_id}>.", ephemeral=True)
+
+class AdminGivePirozhkiModal(Modal):
+    def __init__(self):
+        super().__init__(title="Выдать пирожки")
+        self.user_input = TextInput(label="ID пользователя", placeholder="Цифровой ID", required=True)
+        self.type_input = TextInput(label="Тип пирожка", placeholder="пирожок с картошкой / мясом / луком и яйцом", required=True)
+        self.quantity_input = TextInput(label="Количество", placeholder="Число", required=True)
+        self.add_item(self.user_input)
+        self.add_item(self.type_input)
+        self.add_item(self.quantity_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            user_id = int(self.user_input.value)
+            quantity = int(self.quantity_input.value)
+        except ValueError:
+            await interaction.response.send_message("❌ ID и количество должны быть числами.", ephemeral=True)
+            return
+        pirozhok_type = self.type_input.value.strip().lower()
+        recipe = get_recipe_by_name(pirozhok_type)
+        if not recipe:
+            await interaction.response.send_message("❌ Неверный тип пирожка. Доступные: пирожок с картошкой, пирожок с мясом, пирожок с луком и яйцом", ephemeral=True)
+            return
+        if quantity <= 0:
+            await interaction.response.send_message("❌ Количество должно быть положительным.", ephemeral=True)
+            return
+        add_pirozhki(user_id, pirozhok_type, quantity)
+        await interaction.response.send_message(f"✅ Выдано {quantity} пирожков '{pirozhok_type}' пользователю <@{user_id}>.", ephemeral=True)
+
+class AdminTakePirozhkiModal(Modal):
+    def __init__(self):
+        super().__init__(title="Забрать пирожки")
+        self.user_input = TextInput(label="ID пользователя", placeholder="Цифровой ID", required=True)
+        self.type_input = TextInput(label="Тип пирожка", placeholder="пирожок с картошкой / мясом / луком и яйцом", required=True)
+        self.quantity_input = TextInput(label="Количество", placeholder="Число", required=True)
+        self.add_item(self.user_input)
+        self.add_item(self.type_input)
+        self.add_item(self.quantity_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            user_id = int(self.user_input.value)
+            quantity = int(self.quantity_input.value)
+        except ValueError:
+            await interaction.response.send_message("❌ ID и количество должны быть числами.", ephemeral=True)
+            return
+        pirozhok_type = self.type_input.value.strip().lower()
+        recipe = get_recipe_by_name(pirozhok_type)
+        if not recipe:
+            await interaction.response.send_message("❌ Неверный тип пирожка.", ephemeral=True)
+            return
+        if quantity <= 0:
+            await interaction.response.send_message("❌ Количество должно быть положительным.", ephemeral=True)
+            return
+        current = get_pirozhki_quantity(user_id, pirozhok_type)
+        if current < quantity:
+            await interaction.response.send_message(f"❌ У пользователя только {current} пирожков '{pirozhok_type}'.", ephemeral=True)
+            return
+        if remove_pirozhki(user_id, pirozhok_type, quantity):
+            await interaction.response.send_message(f"✅ Забрано {quantity} пирожков '{pirozhok_type}' у пользователя <@{user_id}>.", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ Ошибка при списании.", ephemeral=True)
+
+class AdminSalaryModal(Modal):
+    def __init__(self):
+        super().__init__(title="Настройка зарплаты")
+        self.min_input = TextInput(label="Мин. зарплата", placeholder=f"Текущая: {get_work_min()}", required=True)
+        self.max_input = TextInput(label="Макс. зарплата", placeholder=f"Текущая: {get_work_max()}", required=True)
+        self.add_item(self.min_input)
+        self.add_item(self.max_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            new_min = int(self.min_input.value)
+            new_max = int(self.max_input.value)
+        except ValueError:
+            await interaction.response.send_message("❌ Введите числа.", ephemeral=True)
+            return
+        if new_min <= 0 or new_max <= 0 or new_min > new_max:
+            await interaction.response.send_message("❌ Неверные значения: мин > 0, макс > 0, мин <= макс.", ephemeral=True)
+            return
+        set_work_min(new_min)
+        set_work_max(new_max)
+        await interaction.response.send_message(f"✅ Зарплата установлена: от {new_min} до {new_max} {COIN_NAME}.", ephemeral=True)
+
+# ---------- VIEW ДЛЯ ВЫБОРА (ингредиенты, рецепты, продажа, магазин) ----------
 class IngredientSelectView(View):
     def __init__(self, user_id):
         super().__init__(timeout=60)
@@ -432,116 +672,6 @@ class SellPirozhokSelect(Select):
         modal = SellPirozhokModal(interaction.user.id, rec_id, rec[1], sell_price)
         await interaction.response.send_modal(modal)
 
-# ---------- ГЛАВНОЕ МЕНЮ С КНОПКАМИ ----------
-class EconomyView(View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="💰 Баланс", style=discord.ButtonStyle.blurple, row=0)
-    async def balance_button(self, interaction: discord.Interaction, button: Button):
-        bal = get_balance(interaction.user.id)
-        embed = discord.Embed(title="💰 Ваш баланс", description=f"**{bal}** {COIN_NAME}", color=discord.Color.blurple())
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @discord.ui.button(label="🎁 Ежедневный", style=discord.ButtonStyle.green, row=0)
-    async def daily_button(self, interaction: discord.Interaction, button: Button):
-        if not can_daily(interaction.user.id):
-            embed = discord.Embed(title="❌ Ошибка", description="Вы уже получали бонус сегодня!", color=discord.Color.red())
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-        update_balance(interaction.user.id, DAILY_REWARD)
-        set_daily(interaction.user.id)
-        embed = discord.Embed(title="🎁 Ежедневный бонус", description=f"Вы получили {DAILY_REWARD} {COIN_NAME}!", color=discord.Color.green())
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @discord.ui.button(label="💼 Работа", style=discord.ButtonStyle.blurple, row=0)
-    async def work_button(self, interaction: discord.Interaction, button: Button):
-        earnings = random.randint(WORK_MIN, WORK_MAX)
-        update_balance(interaction.user.id, earnings)
-        embed = discord.Embed(title="💼 Работа", description=f"Вы заработали **{earnings}** {COIN_NAME}!", color=discord.Color.blue())
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @discord.ui.button(label="💸 Передать", style=discord.ButtonStyle.green, row=0)
-    async def transfer_button(self, interaction: discord.Interaction, button: Button):
-        modal = TransferModal(interaction.user.id)
-        await interaction.response.send_modal(modal)
-
-    @discord.ui.button(label="🎲 Орёл/Решка", style=discord.ButtonStyle.primary, row=1)
-    async def flip_button(self, interaction: discord.Interaction, button: Button):
-        modal = FlipModal(interaction.user.id)
-        await interaction.response.send_modal(modal)
-
-    @discord.ui.button(label="🏆 Топ", style=discord.ButtonStyle.blurple, row=1)
-    async def top_button(self, interaction: discord.Interaction, button: Button):
-        rows = get_top_balances(10)
-        if not rows:
-            embed = discord.Embed(title="🏆 Топ", description="Нет данных.", color=discord.Color.blue())
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-        embed = discord.Embed(title="🏆 Таблица лидеров", color=discord.Color.blue())
-        desc = ""
-        for idx, (user_id, bal) in enumerate(rows, start=1):
-            user = bot.get_user(user_id)
-            name = user.name if user else f"<@{user_id}>"
-            desc += f"{idx}. **{name}** — {bal} {COIN_NAME}\n"
-        embed.description = desc
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @discord.ui.button(label="🛒 Магазин", style=discord.ButtonStyle.blurple, row=1)
-    async def shop_button(self, interaction: discord.Interaction, button: Button):
-        roles = get_shop_roles()
-        if not roles:
-            embed = discord.Embed(title="🛒 Магазин", description="Магазин пуст. Администратор может добавить товары через кнопку '➕ Добавить роль'.", color=discord.Color.red())
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-        embed = discord.Embed(title="🛒 Магазин ролей", color=discord.Color.green())
-        for role_id, role_name, price_coins, pirozhok_type, pirozhok_qty in roles:
-            role = interaction.guild.get_role(role_id)
-            display_name = role.name if role else role_name
-            text = []
-            if price_coins and price_coins > 0:
-                text.append(f"{price_coins} {COIN_NAME}")
-            if pirozhok_type and pirozhok_qty and pirozhok_qty > 0:
-                text.append(f"{pirozhok_qty} пирожков '{pirozhok_type}'")
-            if not text:
-                text.append("Бесплатно? (ошибка)")
-            embed.add_field(name=display_name, value=" или ".join(text), inline=False)
-        view = ShopSelectView(interaction.user.id)
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-    @discord.ui.button(label="🛒 Ингредиенты", style=discord.ButtonStyle.blurple, row=2)
-    async def buy_ingredient_button(self, interaction: discord.Interaction, button: Button):
-        view = IngredientSelectView(interaction.user.id)
-        embed = discord.Embed(title="🛒 Магазин ингредиентов", description="Выберите ингредиент из списка", color=discord.Color.blue())
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-    @discord.ui.button(label="🍞 Выпечка", style=discord.ButtonStyle.primary, row=2)
-    async def bake_button(self, interaction: discord.Interaction, button: Button):
-        view = RecipeSelectView(interaction.user.id)
-        embed = discord.Embed(title="🍞 Выпечка пирожков", description="Выберите рецепт", color=discord.Color.gold())
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-    @discord.ui.button(label="🥧 Мои пирожки", style=discord.ButtonStyle.blurple, row=2)
-    async def my_pirozhki_button(self, interaction: discord.Interaction, button: Button):
-        inv = get_all_pirozhki(interaction.user.id)
-        if not inv:
-            embed = discord.Embed(title="🥧 Ваши пирожки", description="У вас нет пирожков.", color=discord.Color.blue())
-        else:
-            desc = "\n".join([f"**{name}**: {qty} шт." for name, qty in inv.items()])
-            embed = discord.Embed(title="🥧 Ваши пирожки", description=desc, color=discord.Color.gold())
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @discord.ui.button(label="💰 Продать пирожки", style=discord.ButtonStyle.green, row=2)
-    async def sell_pirozhki_button(self, interaction: discord.Interaction, button: Button):
-        view = SellPirozhokSelectView(interaction.user.id)
-        embed = discord.Embed(title="💰 Продажа пирожков", description="Выберите тип пирожка", color=discord.Color.green())
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-
-    @discord.ui.button(label="➕ Добавить роль (админ)", style=discord.ButtonStyle.red, row=3)
-    async def add_shop_role_button(self, interaction: discord.Interaction, button: Button):
-        modal = AddShopRoleModal()
-        await interaction.response.send_modal(modal)
-
 class ShopSelectView(View):
     def __init__(self, user_id):
         super().__init__(timeout=60)
@@ -624,40 +754,169 @@ class ShopSelect(Select):
             embed = discord.Embed(title=f"Покупка роли {role_name}", description="Выберите способ оплаты:", color=discord.Color.orange())
             await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
+# ---------- ГЛАВНОЕ МЕНЮ (ПОЛЬЗОВАТЕЛЬСКОЕ) ----------
+class EconomyView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="💰 Баланс", style=discord.ButtonStyle.blurple, row=0)
+    async def balance_button(self, interaction: discord.Interaction, button: Button):
+        bal = get_balance(interaction.user.id)
+        embed = discord.Embed(title="💰 Ваш баланс", description=f"**{bal}** {COIN_NAME}", color=discord.Color.blurple())
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="🎁 Ежедневный", style=discord.ButtonStyle.green, row=0)
+    async def daily_button(self, interaction: discord.Interaction, button: Button):
+        remaining = get_daily_cooldown_seconds(interaction.user.id)
+        if remaining > 0:
+            hours = remaining // 3600
+            minutes = (remaining % 3600) // 60
+            seconds = remaining % 60
+            await interaction.response.send_message(f"❌ Вы уже получали бонус сегодня. Следующая награда через {hours}ч {minutes}м {seconds}с.", ephemeral=True)
+            return
+        update_balance(interaction.user.id, DAILY_REWARD)
+        set_daily(interaction.user.id)
+        embed = discord.Embed(title="🎁 Ежедневный бонус", description=f"Вы получили {DAILY_REWARD} {COIN_NAME}!", color=discord.Color.green())
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="💼 Работа", style=discord.ButtonStyle.blurple, row=0)
+    async def work_button(self, interaction: discord.Interaction, button: Button):
+        if not can_work(interaction.user.id):
+            remaining = get_work_cooldown_remaining(interaction.user.id)
+            minutes = remaining // 60
+            seconds = remaining % 60
+            await interaction.response.send_message(f"❌ Вы использовали все 20 попыток работы за последние 10 минут. Следующая попытка через {minutes}м {seconds}с.", ephemeral=True)
+            return
+        reward = random.randint(get_work_min(), get_work_max())
+        question, answer, options = generate_math_problem()
+        embed = discord.Embed(title="🧮 Математическая задача", description=f"Решите пример:\n**{question}**", color=discord.Color.blue())
+        view = MathProblemView(interaction.user.id, question, answer, options, reward)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        add_work_use(interaction.user.id)
+
+    @discord.ui.button(label="💸 Передать", style=discord.ButtonStyle.green, row=0)
+    async def transfer_button(self, interaction: discord.Interaction, button: Button):
+        modal = TransferModal(interaction.user.id)
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="🎲 Орёл/Решка", style=discord.ButtonStyle.primary, row=1)
+    async def flip_button(self, interaction: discord.Interaction, button: Button):
+        modal = FlipModal(interaction.user.id)
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="🏆 Топ", style=discord.ButtonStyle.blurple, row=1)
+    async def top_button(self, interaction: discord.Interaction, button: Button):
+        rows = get_top_balances(10)
+        if not rows:
+            embed = discord.Embed(title="🏆 Топ", description="Нет данных.", color=discord.Color.blue())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        embed = discord.Embed(title="🏆 Таблица лидеров", color=discord.Color.blue())
+        desc = ""
+        for idx, (user_id, bal) in enumerate(rows, start=1):
+            user = bot.get_user(user_id)
+            name = user.name if user else f"<@{user_id}>"
+            desc += f"{idx}. **{name}** — {bal} {COIN_NAME}\n"
+        embed.description = desc
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="🛒 Магазин", style=discord.ButtonStyle.blurple, row=1)
+    async def shop_button(self, interaction: discord.Interaction, button: Button):
+        roles = get_shop_roles()
+        if not roles:
+            embed = discord.Embed(title="🛒 Магазин", description="Магазин пуст.", color=discord.Color.red())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        embed = discord.Embed(title="🛒 Магазин ролей", color=discord.Color.green())
+        for role_id, role_name, price_coins, pirozhok_type, pirozhok_qty in roles:
+            role = interaction.guild.get_role(role_id)
+            display_name = role.name if role else role_name
+            text = []
+            if price_coins and price_coins > 0:
+                text.append(f"{price_coins} {COIN_NAME}")
+            if pirozhok_type and pirozhok_qty and pirozhok_qty > 0:
+                text.append(f"{pirozhok_qty} пирожков '{pirozhok_type}'")
+            embed.add_field(name=display_name, value=" или ".join(text), inline=False)
+        view = ShopSelectView(interaction.user.id)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    @discord.ui.button(label="🛒 Ингредиенты", style=discord.ButtonStyle.blurple, row=2)
+    async def buy_ingredient_button(self, interaction: discord.Interaction, button: Button):
+        view = IngredientSelectView(interaction.user.id)
+        embed = discord.Embed(title="🛒 Магазин ингредиентов", description="Выберите ингредиент", color=discord.Color.blue())
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    @discord.ui.button(label="🍞 Выпечка", style=discord.ButtonStyle.primary, row=2)
+    async def bake_button(self, interaction: discord.Interaction, button: Button):
+        view = RecipeSelectView(interaction.user.id)
+        embed = discord.Embed(title="🍞 Выпечка пирожков", description="Выберите рецепт", color=discord.Color.gold())
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    @discord.ui.button(label="🥧 Мои пирожки", style=discord.ButtonStyle.blurple, row=2)
+    async def my_pirozhki_button(self, interaction: discord.Interaction, button: Button):
+        inv = get_all_pirozhki(interaction.user.id)
+        if not inv:
+            embed = discord.Embed(title="🥧 Ваши пирожки", description="У вас нет пирожков.", color=discord.Color.blue())
+        else:
+            desc = "\n".join([f"**{name}**: {qty} шт." for name, qty in inv.items()])
+            embed = discord.Embed(title="🥧 Ваши пирожки", description=desc, color=discord.Color.gold())
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="💰 Продать пирожки", style=discord.ButtonStyle.green, row=2)
+    async def sell_pirozhki_button(self, interaction: discord.Interaction, button: Button):
+        view = SellPirozhokSelectView(interaction.user.id)
+        embed = discord.Embed(title="💰 Продажа пирожков", description="Выберите тип", color=discord.Color.green())
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
 # ---------- СОБЫТИЯ БОТА ----------
 @bot.event
 async def on_ready():
     print(f"✅ Бот {bot.user} запущен!")
     init_db()
+    # Основной канал
     channel = bot.get_channel(ALLOWED_CHANNEL_ID)
-    if not channel:
-        print(f"❌ Канал с ID {ALLOWED_CHANNEL_ID} не найден!")
-        return
-    async for message in channel.history(limit=50):
-        if message.author == bot.user and message.embeds and message.components:
-            await message.edit(view=EconomyView())
-            print("Главное сообщение обновлено.")
-            break
+    if channel:
+        async for message in channel.history(limit=50):
+            if message.author == bot.user and message.embeds and message.components:
+                await message.edit(view=EconomyView())
+                print("Главное сообщение обновлено.")
+                break
+        else:
+            embed = discord.Embed(
+                title="💎 Экономический бот",
+                description=(
+                    "Нажимайте на кнопки ниже.\n\n"
+                    f"**{COIN_NAME}** — основная валюта.\n"
+                    "• Ежедневный бонус — 100 монет\n"
+                    "• Работа — решите математическую задачу (до 20 раз в 10 минут)\n"
+                    "• Орёл/Решка — удвоение ставки\n"
+                    "• Передать монеты\n\n"
+                    "**🥧 Выпечка пирожков:**\n"
+                    "• Купите ингредиенты, испеките пирожки.\n"
+                    "• Пирожки можно продать или обменять на роли."
+                ),
+                color=discord.Color.gold()
+            )
+            await channel.send(embed=embed, view=EconomyView())
+            print("Главное сообщение отправлено.")
     else:
-        embed = discord.Embed(
-            title="💎 Экономический бот",
-            description=(
-                "Нажимайте на кнопки ниже, чтобы взаимодействовать.\n\n"
-                f"**{COIN_NAME}** — основная валюта.\n"
-                "• `Ежедневный` — 100 монет раз в сутки\n"
-                "• `Работа` — от 50 до 150 монет\n"
-                "• `Орёл/Решка` — удвоение ставки\n"
-                "• `Передать` — перевод монет\n\n"
-                "**🥧 Выпечка пирожков:**\n"
-                "• Купите ингредиенты, испеките пирожки по рецептам.\n"
-                "• Пирожки можно продать за монеты или обменять на роли в магазине.\n\n"
-                "**Администратор** может добавлять роли в магазин через кнопку **➕ Добавить роль (админ)**."
-            ),
-            color=discord.Color.gold()
-        )
-        await channel.send(embed=embed, view=EconomyView())
-        print("Главное сообщение отправлено.")
-    print(f"Бот активен в канале {channel.name}")
+        print(f"❌ Канал {ALLOWED_CHANNEL_ID} не найден!")
+
+    # Админ-канал
+    if ADMIN_CHANNEL_ID:
+        admin_channel = bot.get_channel(ADMIN_CHANNEL_ID)
+        if admin_channel:
+            async for message in admin_channel.history(limit=50):
+                if message.author == bot.user and message.embeds and "Админ-панель" in (message.embeds[0].title if message.embeds else ""):
+                    await message.edit(view=AdminPanelView())
+                    print("Админ-панель обновлена.")
+                    break
+            else:
+                embed = discord.Embed(title="🛠️ Админ-панель", description="Управление экономикой сервера", color=discord.Color.red())
+                await admin_channel.send(embed=embed, view=AdminPanelView())
+                print("Админ-панель отправлена.")
+        else:
+            print(f"❌ Админ-канал {ADMIN_CHANNEL_ID} не найден!")
 
 # ---------- ЗАПУСК ----------
 if __name__ == "__main__":
