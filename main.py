@@ -312,16 +312,12 @@ class AddShopRoleModal(Modal):
         self.price_coins_input = TextInput(label="Цена в монетах (0 если не надо)", placeholder="Число", required=True, default="0")
         self.pirozhok_type_input = TextInput(label="Тип пирожка (оставьте пустым если не надо)", placeholder="пирожок с картошкой / мясом / луком и яйцом", required=False)
         self.pirozhok_qty_input = TextInput(label="Количество пирожков (0 если не надо)", placeholder="Число", required=True, default="0")
+        self.condition_input = TextInput(label="Условие (or/and)", placeholder="or - можно купить за монеты ИЛИ пирожки; and - нужны и монеты, и пирожки", required=True, default="or")
         self.add_item(self.role_id_input)
         self.add_item(self.price_coins_input)
         self.add_item(self.pirozhok_type_input)
         self.add_item(self.pirozhok_qty_input)
-        # Выбор условия (добавим в конце)
-        self.condition_select = Select(placeholder="Условие покупки", options=[
-            discord.SelectOption(label="ИЛИ (можно купить за монеты ИЛИ пирожки)", value="or"),
-            discord.SelectOption(label="И (нужны и монеты, и пирожки)", value="and")
-        ])
-        self.add_item(self.condition_select)
+        self.add_item(self.condition_input)
 
     async def on_submit(self, interaction: discord.Interaction):
         if not interaction.user.guild_permissions.administrator:
@@ -347,7 +343,10 @@ class AddShopRoleModal(Modal):
         if price_coins <= 0 and (not pirozhok_type or pirozhok_qty <= 0):
             await interaction.response.send_message("❌ Укажите хотя бы один способ оплаты (монеты или пирожки).", ephemeral=True)
             return
-        condition = self.condition_select.values[0]
+        condition = self.condition_input.value.strip().lower()
+        if condition not in ('or', 'and'):
+            await interaction.response.send_message("❌ Условие должно быть 'or' или 'and'.", ephemeral=True)
+            return
         add_shop_role(role_id, role.name, price_coins if price_coins > 0 else None, pirozhok_type, pirozhok_qty if pirozhok_qty > 0 else None, condition)
         embed = discord.Embed(title="✅ Готово", color=discord.Color.green())
         desc = f"Роль {role.mention} добавлена в магазин."
@@ -358,7 +357,6 @@ class AddShopRoleModal(Modal):
         desc += f"\n📌 Условие: {'ИЛИ' if condition == 'or' else 'И'}"
         embed.description = desc
         await interaction.response.send_message(embed=embed, ephemeral=True)
-        # Логирование
         log_admin_action(interaction.user.id, interaction.user.name, "add_shop_role", target_id=role_id, target_name=role.name, details=f"coins={price_coins}, pirozhki={pirozhok_type}:{pirozhok_qty}, condition={condition}")
         await send_log(interaction.user.name, "добавил роль в магазин", role.name, f"цена: {desc}")
 
@@ -636,7 +634,6 @@ class AdminSalaryModal(Modal):
         log_admin_action(interaction.user.id, interaction.user.name, "set_work_salary", details=f"min={new_min}, max={new_max}")
         await send_log(interaction.user.name, "изменил зарплату за работу", None, f"от {new_min} до {new_max}")
         await interaction.response.send_message(f"✅ Зарплата установлена: от {new_min} до {new_max} {COIN_NAME}.", ephemeral=True)
-        # Обновляем главный эмбед
         channel = bot.get_channel(ALLOWED_CHANNEL_ID)
         if channel:
             await EconomyView.update_main_embed(channel)
@@ -659,7 +656,6 @@ class AdminDailyRewardModal(Modal):
         log_admin_action(interaction.user.id, interaction.user.name, "set_daily_reward", details=str(new_reward))
         await send_log(interaction.user.name, "изменил ежедневную награду", None, f"{new_reward} {COIN_NAME}")
         await interaction.response.send_message(f"✅ Ежедневная награда изменена на {new_reward} {COIN_NAME}.", ephemeral=True)
-        # Обновляем главный эмбед
         channel = bot.get_channel(ALLOWED_CHANNEL_ID)
         if channel:
             await EconomyView.update_main_embed(channel)
@@ -790,7 +786,6 @@ class ShopSelect(Select):
         has_coins = price_coins and price_coins > 0
         has_pirozhki = pirozhok_type and pirozhok_qty and pirozhok_qty > 0
         if has_coins and has_pirozhki and condition == 'and':
-            # Нужны и монеты, и пирожки
             bal = get_balance(interaction.user.id)
             have_p = get_pirozhki_quantity(interaction.user.id, pirozhok_type)
             if bal < price_coins or have_p < pirozhok_qty:
@@ -811,7 +806,6 @@ class ShopSelect(Select):
             embed = discord.Embed(title="✅ Покупка", description=f"Вы купили роль {role.mention} за {price_coins} {COIN_NAME} и {pirozhok_qty} пирожков '{pirozhok_type}'!", color=discord.Color.green())
             await interaction.response.send_message(embed=embed, ephemeral=True)
         elif has_coins and has_pirozhki and condition == 'or':
-            # Показываем выбор
             view = BuyRoleChoiceView(interaction.user.id, role_id, role_name, price_coins, pirozhok_type, pirozhok_qty)
             embed = discord.Embed(title=f"Покупка роли {role_name}", description="Выберите способ оплаты:", color=discord.Color.orange())
             await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
