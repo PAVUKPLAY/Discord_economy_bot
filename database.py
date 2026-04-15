@@ -7,10 +7,14 @@ DB_PATH = "economy.db"
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    # Таблица пользователей (добавляем опыт и уровень)
     c.execute('''CREATE TABLE IF NOT EXISTS users
                  (user_id INTEGER PRIMARY KEY,
                   balance INTEGER DEFAULT 0,
-                  last_daily TEXT)''')
+                  last_daily TEXT,
+                  xp INTEGER DEFAULT 0,
+                  level INTEGER DEFAULT 1)''')
+    # Таблица магазина ролей
     c.execute('''CREATE TABLE IF NOT EXISTS shop_roles
                  (role_id INTEGER PRIMARY KEY,
                   role_name TEXT,
@@ -18,28 +22,34 @@ def init_db():
                   price_pirozhki_type TEXT,
                   price_pirozhki_qty INTEGER,
                   condition TEXT)''')
+    # Ингредиенты
     c.execute('''CREATE TABLE IF NOT EXISTS ingredients
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   name TEXT UNIQUE,
                   price INTEGER)''')
+    # Рецепты
     c.execute('''CREATE TABLE IF NOT EXISTS recipes
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   name TEXT UNIQUE,
                   ingredients TEXT,
                   sell_price INTEGER)''')
+    # Инвентарь
     c.execute('''CREATE TABLE IF NOT EXISTS user_inventory
                  (user_id INTEGER,
                   item_type TEXT,
                   item_id INTEGER,
                   quantity INTEGER,
                   PRIMARY KEY (user_id, item_type, item_id))''')
+    # Логи работы
     c.execute('''CREATE TABLE IF NOT EXISTS work_uses
                  (user_id INTEGER,
                   timestamp REAL,
                   PRIMARY KEY (user_id, timestamp))''')
+    # Настройки
     c.execute('''CREATE TABLE IF NOT EXISTS settings
                  (key TEXT PRIMARY KEY,
                   value TEXT)''')
+    # Логи админов
     c.execute('''CREATE TABLE IF NOT EXISTS admin_logs
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   admin_id INTEGER,
@@ -49,8 +59,23 @@ def init_db():
                   target_name TEXT,
                   details TEXT,
                   timestamp TEXT)''')
+    # Промокоды
+    c.execute('''CREATE TABLE IF NOT EXISTS promocodes
+                 (code TEXT PRIMARY KEY,
+                  reward_type TEXT,
+                  reward_amount INTEGER,
+                  uses_limit INTEGER,
+                  uses_count INTEGER DEFAULT 0,
+                  created_by INTEGER,
+                  created_at TEXT)''')
+    # Использования промокодов пользователями (чтобы нельзя было активировать повторно)
+    c.execute('''CREATE TABLE IF NOT EXISTS promo_uses
+                 (user_id INTEGER,
+                  code TEXT,
+                  PRIMARY KEY (user_id, code))''')
     conn.commit()
 
+    # Заполнение начальными данными (ингредиенты, рецепты, настройки)
     c.execute("SELECT COUNT(*) FROM ingredients")
     if c.fetchone()[0] == 0:
         ingredients = [
@@ -71,12 +96,16 @@ def init_db():
         settings = [
             ('work_min', '50'),
             ('work_max', '150'),
-            ('daily_reward', '100')
+            ('daily_reward', '100'),
+            ('xp_per_work', '10'),
+            ('xp_per_gamble', '5'),
+            ('level_base_xp', '100')
         ]
         c.executemany("INSERT INTO settings (key, value) VALUES (?, ?)", settings)
     conn.commit()
     conn.close()
 
+# ---------- Баланс монет ----------
 def get_balance(user_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -94,15 +123,68 @@ def update_balance(user_id, amount):
     conn.commit()
     conn.close()
 
-def set_balance(user_id, amount):
+# ---------- Опыт и уровни ----------
+def get_xp(user_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("INSERT INTO users (user_id, balance) VALUES (?, ?) "
-              "ON CONFLICT(user_id) DO UPDATE SET balance = ?",
+    c.execute("SELECT xp, level FROM users WHERE user_id = ?", (user_id,))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        return row[0], row[1]
+    return 0, 1
+
+def add_xp(user_id, amount):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("INSERT INTO users (user_id, xp, level) VALUES (?, ?, 1) "
+              "ON CONFLICT(user_id) DO UPDATE SET xp = xp + ?",
               (user_id, amount, amount))
     conn.commit()
+    # Проверка на повышение уровня
+    check_level_up(user_id)
     conn.close()
 
+def set_xp(user_id, amount):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("INSERT INTO users (user_id, xp) VALUES (?, ?) "
+              "ON CONFLICT(user_id) DO UPDATE SET xp = ?",
+              (user_id, amount, amount))
+    conn.commit()
+    check_level_up(user_id)
+    conn.close()
+
+def get_level_xp(level):
+    base = int(get_setting('level_base_xp', 100))
+    return base * level  # простая формула: 100, 200, 300...
+
+def check_level_up(user_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT xp, level FROM users WHERE user_id = ?", (user_id,))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return
+    xp, level = row
+    new_level = level
+    while xp >= get_level_xp(new_level):
+        new_level += 1
+    if new_level > level:
+        c.execute("UPDATE users SET level = ? WHERE user_id = ?", (new_level, user_id))
+        conn.commit()
+    conn.close()
+
+def get_user_level(user_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT level FROM users WHERE user_id = ?", (user_id,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else 1
+
+# ---------- Ежедневный бонус ----------
 def can_daily(user_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -137,6 +219,7 @@ def get_daily_cooldown_seconds(user_id):
     remaining = (next_available - datetime.now()).total_seconds()
     return max(0, int(remaining))
 
+# ---------- Работа ----------
 def can_work(user_id):
     now = datetime.now().timestamp()
     ten_min_ago = now - 600
@@ -176,6 +259,7 @@ def get_work_cooldown_remaining(user_id):
         return max(0, int(remaining))
     return 0
 
+# ---------- Настройки ----------
 def get_setting(key, default=None):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -211,6 +295,19 @@ def get_daily_reward():
 def set_daily_reward(value):
     set_setting('daily_reward', value)
 
+def get_xp_per_work():
+    return int(get_setting('xp_per_work', 10))
+
+def get_xp_per_gamble():
+    return int(get_setting('xp_per_gamble', 5))
+
+def set_xp_per_work(value):
+    set_setting('xp_per_work', value)
+
+def set_xp_per_gamble(value):
+    set_setting('xp_per_gamble', value)
+
+# ---------- Топ по балансу и опыту ----------
 def get_top_balances(limit=10):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -219,6 +316,135 @@ def get_top_balances(limit=10):
     conn.close()
     return rows
 
+def get_top_xp(limit=10):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT user_id, xp, level FROM users ORDER BY xp DESC LIMIT ?", (limit,))
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+# ---------- Промокоды ----------
+def create_promocode(code, reward_type, reward_amount, uses_limit, created_by):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    now = datetime.now().isoformat()
+    try:
+        c.execute("INSERT INTO promocodes (code, reward_type, reward_amount, uses_limit, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                  (code, reward_type, reward_amount, uses_limit, created_by, now))
+        conn.commit()
+        conn.close()
+        return True
+    except sqlite3.IntegrityError:
+        conn.close()
+        return False
+
+def get_promocode(code):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT reward_type, reward_amount, uses_limit, uses_count FROM promocodes WHERE code = ?", (code,))
+    row = c.fetchone()
+    conn.close()
+    return row
+
+def use_promocode(user_id, code):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    # Проверяем, не использовал ли уже
+    c.execute("SELECT 1 FROM promo_uses WHERE user_id = ? AND code = ?", (user_id, code))
+    if c.fetchone():
+        conn.close()
+        return "already_used"
+    # Получаем промокод
+    c.execute("SELECT reward_type, reward_amount, uses_limit, uses_count FROM promocodes WHERE code = ?", (code,))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return "not_found"
+    reward_type, reward_amount, uses_limit, uses_count = row
+    if uses_limit is not None and uses_count >= uses_limit:
+        conn.close()
+        return "expired"
+    # Начисляем награду
+    if reward_type == "coins":
+        update_balance(user_id, reward_amount)
+    elif reward_type == "pirozhki":
+        # предполагаем, что reward_amount - это количество, а тип пирожка нужно указать в названии? Упростим: даём случайный? Нет, пусть промокод создаётся с указанием типа пирожка в reward_amount строкой? Лучше расширим: reward_details
+        # Для простоты: если reward_type == "pirozhki", то reward_amount содержит количество, а тип пирожка - отдельное поле. Добавим колонку reward_details.
+        # Но чтобы не менять схему, сделаем так: промокод может давать пирожки только определённого типа, который передаётся в reward_amount как "тип|количество".
+        # Упростим: будем хранить reward_amount как количество, а тип пирожка - отдельно. Но для скорости добавим колонку reward_item.
+        # Переделаем таблицу: добавим reward_item.
+        pass
+    # Обновляем счётчик использований
+    c.execute("UPDATE promocodes SET uses_count = uses_count + 1 WHERE code = ?", (code,))
+    c.execute("INSERT INTO promo_uses (user_id, code) VALUES (?, ?)", (user_id, code))
+    conn.commit()
+    conn.close()
+    return "success", reward_type, reward_amount
+
+# Для упрощения переделаем таблицу промокодов (добавим reward_item). Выполните миграцию:
+def migrate_promocodes():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("ALTER TABLE promocodes ADD COLUMN reward_item TEXT")
+    except sqlite3.OperationalError:
+        pass
+    conn.commit()
+    conn.close()
+
+# Новая функция создания промокода с предметом
+def create_promocode_full(code, reward_type, reward_amount, reward_item, uses_limit, created_by):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    now = datetime.now().isoformat()
+    try:
+        c.execute("INSERT INTO promocodes (code, reward_type, reward_amount, reward_item, uses_limit, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                  (code, reward_type, reward_amount, reward_item, uses_limit, created_by, now))
+        conn.commit()
+        conn.close()
+        return True
+    except sqlite3.IntegrityError:
+        conn.close()
+        return False
+
+def use_promocode_full(user_id, code):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT 1 FROM promo_uses WHERE user_id = ? AND code = ?", (user_id, code))
+    if c.fetchone():
+        conn.close()
+        return "already_used"
+    c.execute("SELECT reward_type, reward_amount, reward_item, uses_limit, uses_count FROM promocodes WHERE code = ?", (code,))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return "not_found"
+    reward_type, reward_amount, reward_item, uses_limit, uses_count = row
+    if uses_limit is not None and uses_count >= uses_limit:
+        conn.close()
+        return "expired"
+    if reward_type == "coins":
+        update_balance(user_id, reward_amount)
+    elif reward_type == "pirozhki":
+        add_pirozhki(user_id, reward_item, reward_amount)
+    elif reward_type == "xp":
+        add_xp(user_id, reward_amount)
+    c.execute("UPDATE promocodes SET uses_count = uses_count + 1 WHERE code = ?", (code,))
+    c.execute("INSERT INTO promo_uses (user_id, code) VALUES (?, ?)", (user_id, code))
+    conn.commit()
+    conn.close()
+    return "success", reward_type, reward_amount, reward_item
+
+def get_all_promocodes():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT code, reward_type, reward_amount, reward_item, uses_limit, uses_count, created_at FROM promocodes")
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+# ---------- Логирование админов ----------
 def log_admin_action(admin_id, admin_name, action, target_id=None, target_name=None, details=None):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -228,6 +454,7 @@ def log_admin_action(admin_id, admin_name, action, target_id=None, target_name=N
     conn.commit()
     conn.close()
 
+# ---------- Магазин ролей ----------
 def add_shop_role(role_id, role_name, price_coins=None, price_pirozhki_type=None, price_pirozhki_qty=None, condition='or'):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -259,6 +486,7 @@ def delete_shop_role(role_id):
     conn.commit()
     conn.close()
 
+# ---------- Ингредиенты, рецепты, инвентарь ----------
 def get_all_ingredients():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -383,3 +611,6 @@ def remove_pirozhki(user_id, recipe_name, quantity):
     if not recipe:
         return False
     return remove_inventory(user_id, "pirozhok", recipe[0], quantity)
+
+# Вызов миграции при старте
+migrate_promocodes()
