@@ -51,7 +51,6 @@ def init_db():
                   timestamp TEXT)''')
     conn.commit()
 
-    # Заполнение начальными данными
     c.execute("SELECT COUNT(*) FROM ingredients")
     if c.fetchone()[0] == 0:
         ingredients = [
@@ -78,7 +77,6 @@ def init_db():
     conn.commit()
     conn.close()
 
-# ---------- Баланс монет ----------
 def get_balance(user_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -105,7 +103,6 @@ def set_balance(user_id, amount):
     conn.commit()
     conn.close()
 
-# ---------- Ежедневный бонус ----------
 def can_daily(user_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -140,7 +137,6 @@ def get_daily_cooldown_seconds(user_id):
     remaining = (next_available - datetime.now()).total_seconds()
     return max(0, int(remaining))
 
-# ---------- Работа с кулдауном ----------
 def can_work(user_id):
     now = datetime.now().timestamp()
     ten_min_ago = now - 600
@@ -180,7 +176,6 @@ def get_work_cooldown_remaining(user_id):
         return max(0, int(remaining))
     return 0
 
-# ---------- Настройки ----------
 def get_setting(key, default=None):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -216,7 +211,14 @@ def get_daily_reward():
 def set_daily_reward(value):
     set_setting('daily_reward', value)
 
-# ---------- Логирование ----------
+def get_top_balances(limit=10):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT user_id, balance FROM users ORDER BY balance DESC LIMIT ?", (limit,))
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
 def log_admin_action(admin_id, admin_name, action, target_id=None, target_name=None, details=None):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -226,7 +228,6 @@ def log_admin_action(admin_id, admin_name, action, target_id=None, target_name=N
     conn.commit()
     conn.close()
 
-# ---------- Магазин ролей ----------
 def add_shop_role(role_id, role_name, price_coins=None, price_pirozhki_type=None, price_pirozhki_qty=None, condition='or'):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -258,7 +259,6 @@ def delete_shop_role(role_id):
     conn.commit()
     conn.close()
 
-# ---------- Ингредиенты, рецепты, инвентарь ----------
 def get_all_ingredients():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
