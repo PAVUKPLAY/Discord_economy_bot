@@ -7,45 +7,48 @@ DB_PATH = "economy.db"
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    # Таблица пользователей
     c.execute('''CREATE TABLE IF NOT EXISTS users
                  (user_id INTEGER PRIMARY KEY,
                   balance INTEGER DEFAULT 0,
                   last_daily TEXT)''')
-    # Таблица магазина ролей (монеты и пирожки)
     c.execute('''CREATE TABLE IF NOT EXISTS shop_roles
                  (role_id INTEGER PRIMARY KEY,
                   role_name TEXT,
                   price_coins INTEGER,
                   price_pirozhki_type TEXT,
-                  price_pirozhki_qty INTEGER)''')
-    # Ингредиенты
+                  price_pirozhki_qty INTEGER,
+                  condition TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS ingredients
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   name TEXT UNIQUE,
                   price INTEGER)''')
-    # Рецепты
     c.execute('''CREATE TABLE IF NOT EXISTS recipes
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   name TEXT UNIQUE,
                   ingredients TEXT,
                   sell_price INTEGER)''')
-    # Инвентарь
     c.execute('''CREATE TABLE IF NOT EXISTS user_inventory
                  (user_id INTEGER,
                   item_type TEXT,
                   item_id INTEGER,
                   quantity INTEGER,
                   PRIMARY KEY (user_id, item_type, item_id))''')
-    # Таблица для кулдауна работы (логируем каждое использование)
     c.execute('''CREATE TABLE IF NOT EXISTS work_uses
                  (user_id INTEGER,
                   timestamp REAL,
                   PRIMARY KEY (user_id, timestamp))''')
-    # Таблица настроек зарплаты
     c.execute('''CREATE TABLE IF NOT EXISTS settings
                  (key TEXT PRIMARY KEY,
-                  value INTEGER)''')
+                  value TEXT)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS admin_logs
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  admin_id INTEGER,
+                  admin_name TEXT,
+                  action TEXT,
+                  target_id INTEGER,
+                  target_name TEXT,
+                  details TEXT,
+                  timestamp TEXT)''')
     conn.commit()
 
     # Заполнение начальными данными
@@ -66,7 +69,12 @@ def init_db():
         c.executemany("INSERT INTO recipes (name, ingredients, sell_price) VALUES (?, ?, ?)", recipes)
     c.execute("SELECT COUNT(*) FROM settings")
     if c.fetchone()[0] == 0:
-        c.execute("INSERT INTO settings (key, value) VALUES ('work_min', 50), ('work_max', 150)")
+        settings = [
+            ('work_min', '50'),
+            ('work_max', '150'),
+            ('daily_reward', '100')
+        ]
+        c.executemany("INSERT INTO settings (key, value) VALUES (?, ?)", settings)
     conn.commit()
     conn.close()
 
@@ -132,7 +140,7 @@ def get_daily_cooldown_seconds(user_id):
     remaining = (next_available - datetime.now()).total_seconds()
     return max(0, int(remaining))
 
-# ---------- Работа с кулдауном работы (20 раз в 10 минут) ----------
+# ---------- Работа с кулдауном ----------
 def can_work(user_id):
     now = datetime.now().timestamp()
     ten_min_ago = now - 600
@@ -161,7 +169,6 @@ def get_work_cooldown_remaining(user_id):
     conn.close()
     if count < 20:
         return 0
-    # Находим самую старую запись за последние 10 минут, чтобы узнать, когда освободится слот
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT MIN(timestamp) FROM work_uses WHERE user_id = ? AND timestamp > ?", (user_id, ten_min_ago))
@@ -173,50 +180,65 @@ def get_work_cooldown_remaining(user_id):
         return max(0, int(remaining))
     return 0
 
-# ---------- Настройки зарплаты ----------
-def get_work_min():
+# ---------- Настройки ----------
+def get_setting(key, default=None):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT value FROM settings WHERE key = 'work_min'")
+    c.execute("SELECT value FROM settings WHERE key = ?", (key,))
     row = c.fetchone()
     conn.close()
-    return row[0] if row else 50
+    if row:
+        return row[0]
+    return default
 
-def get_work_max():
+def set_setting(key, value):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT value FROM settings WHERE key = 'work_max'")
-    row = c.fetchone()
-    conn.close()
-    return row[0] if row else 150
-
-def set_work_min(value):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("UPDATE settings SET value = ? WHERE key = 'work_min'", (value,))
+    c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
     conn.commit()
     conn.close()
 
+def get_work_min():
+    return int(get_setting('work_min', 50))
+
+def get_work_max():
+    return int(get_setting('work_max', 150))
+
+def set_work_min(value):
+    set_setting('work_min', value)
+
 def set_work_max(value):
+    set_setting('work_max', value)
+
+def get_daily_reward():
+    return int(get_setting('daily_reward', 100))
+
+def set_daily_reward(value):
+    set_setting('daily_reward', value)
+
+# ---------- Логирование ----------
+def log_admin_action(admin_id, admin_name, action, target_id=None, target_name=None, details=None):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("UPDATE settings SET value = ? WHERE key = 'work_max'", (value,))
+    now = datetime.now().isoformat()
+    c.execute("INSERT INTO admin_logs (admin_id, admin_name, action, target_id, target_name, details, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
+              (admin_id, admin_name, action, target_id, target_name, details, now))
     conn.commit()
     conn.close()
 
 # ---------- Магазин ролей ----------
-def add_shop_role(role_id, role_name, price_coins=None, price_pirozhki_type=None, price_pirozhki_qty=None):
+def add_shop_role(role_id, role_name, price_coins=None, price_pirozhki_type=None, price_pirozhki_qty=None, condition='or'):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO shop_roles (role_id, role_name, price_coins, price_pirozhki_type, price_pirozhki_qty) VALUES (?, ?, ?, ?, ?)",
-              (role_id, role_name, price_coins, price_pirozhki_type, price_pirozhki_qty))
+    c.execute("INSERT OR REPLACE INTO shop_roles (role_id, role_name, price_coins, price_pirozhki_type, price_pirozhki_qty, condition) VALUES (?, ?, ?, ?, ?, ?)",
+              (role_id, role_name, price_coins, price_pirozhki_type, price_pirozhki_qty, condition))
     conn.commit()
     conn.close()
 
 def get_shop_roles():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT role_id, role_name, price_coins, price_pirozhki_type, price_pirozhki_qty FROM shop_roles")
+    c.execute("SELECT role_id, role_name, price_coins, price_pirozhki_type, price_pirozhki_qty, condition FROM shop_roles")
     rows = c.fetchall()
     conn.close()
     return rows
@@ -224,7 +246,7 @@ def get_shop_roles():
 def get_shop_role(role_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT role_name, price_coins, price_pirozhki_type, price_pirozhki_qty FROM shop_roles WHERE role_id = ?", (role_id,))
+    c.execute("SELECT role_name, price_coins, price_pirozhki_type, price_pirozhki_qty, condition FROM shop_roles WHERE role_id = ?", (role_id,))
     row = c.fetchone()
     conn.close()
     return row
@@ -349,7 +371,6 @@ def get_all_pirozhki(user_id):
     conn.close()
     return {name: qty for name, qty in rows}
 
-# ---------- Админские операции с инвентарём ----------
 def add_pirozhki(user_id, recipe_name, quantity):
     recipe = get_recipe_by_name(recipe_name)
     if not recipe:
