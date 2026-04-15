@@ -4,6 +4,7 @@ from discord.ui import Button, View, Modal, TextInput, Select
 import random
 import os
 import json
+from datetime import datetime
 from dotenv import load_dotenv
 from database import *
 
@@ -21,15 +22,31 @@ ALLOWED_CHANNEL_ID = int(ALLOWED_CHANNEL_ID)
 ADMIN_CHANNEL_ID = os.getenv('ADMIN_CHANNEL_ID')
 if ADMIN_CHANNEL_ID:
     ADMIN_CHANNEL_ID = int(ADMIN_CHANNEL_ID)
-else:
-    ADMIN_CHANNEL_ID = None
 
-DAILY_REWARD = 100
+LOG_CHANNEL_ID = os.getenv('LOG_CHANNEL_ID')
+if LOG_CHANNEL_ID:
+    LOG_CHANNEL_ID = int(LOG_CHANNEL_ID)
+
 COIN_NAME = "🪙 монет"
 
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+# ---------- Функция отправки логов в канал ----------
+async def send_log(admin_name, action, target_name=None, details=None):
+    if LOG_CHANNEL_ID:
+        channel = bot.get_channel(LOG_CHANNEL_ID)
+        if channel:
+            embed = discord.Embed(title="📋 Лог админ-действия", color=discord.Color.orange())
+            embed.add_field(name="Администратор", value=admin_name, inline=True)
+            embed.add_field(name="Действие", value=action, inline=True)
+            if target_name:
+                embed.add_field(name="Цель", value=target_name, inline=True)
+            if details:
+                embed.add_field(name="Детали", value=details, inline=False)
+            embed.timestamp = datetime.now()
+            await channel.send(embed=embed)
 
 # ---------- ГЕНЕРАЦИЯ МАТЕМАТИЧЕСКОЙ ЗАДАЧИ ----------
 def generate_math_problem():
@@ -45,12 +62,11 @@ def generate_math_problem():
         b = random.randint(1, a)
         answer = a - b
         question = f"{a} - {b}"
-    else:  # *
+    else:
         a = random.randint(1, 5)
         b = random.randint(1, 5)
         answer = a * b
         question = f"{a} * {b}"
-    # Генерируем 3 варианта ответа (один правильный, два случайных)
     options = [answer]
     while len(options) < 3:
         fake = answer + random.randint(-3, 3)
@@ -288,18 +304,24 @@ class SellPirozhokModal(Modal):
         embed = discord.Embed(title="💰 Продажа", description=f"Вы продали {qty} шт. **{self.recipe_name}** за {total} {COIN_NAME}.", color=discord.Color.green())
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# ---------- МОДАЛЬНЫЕ ОКНА ДЛЯ МАГАЗИНА РОЛЕЙ ----------
+# ---------- МОДАЛЬНЫЕ ОКНА ДЛЯ МАГАЗИНА РОЛЕЙ (АДМИН) ----------
 class AddShopRoleModal(Modal):
     def __init__(self):
         super().__init__(title="Добавить роль в магазин", timeout=120)
         self.role_id_input = TextInput(label="ID роли", placeholder="Цифровой ID роли", required=True)
-        self.price_coins_input = TextInput(label="Цена в монетах (0 если не продаётся)", placeholder="Число", required=True, default="0")
+        self.price_coins_input = TextInput(label="Цена в монетах (0 если не надо)", placeholder="Число", required=True, default="0")
         self.pirozhok_type_input = TextInput(label="Тип пирожка (оставьте пустым если не надо)", placeholder="пирожок с картошкой / мясом / луком и яйцом", required=False)
         self.pirozhok_qty_input = TextInput(label="Количество пирожков (0 если не надо)", placeholder="Число", required=True, default="0")
         self.add_item(self.role_id_input)
         self.add_item(self.price_coins_input)
         self.add_item(self.pirozhok_type_input)
         self.add_item(self.pirozhok_qty_input)
+        # Выбор условия (добавим в конце)
+        self.condition_select = Select(placeholder="Условие покупки", options=[
+            discord.SelectOption(label="ИЛИ (можно купить за монеты ИЛИ пирожки)", value="or"),
+            discord.SelectOption(label="И (нужны и монеты, и пирожки)", value="and")
+        ])
+        self.add_item(self.condition_select)
 
     async def on_submit(self, interaction: discord.Interaction):
         if not interaction.user.guild_permissions.administrator:
@@ -325,15 +347,20 @@ class AddShopRoleModal(Modal):
         if price_coins <= 0 and (not pirozhok_type or pirozhok_qty <= 0):
             await interaction.response.send_message("❌ Укажите хотя бы один способ оплаты (монеты или пирожки).", ephemeral=True)
             return
-        add_shop_role(role_id, role.name, price_coins if price_coins > 0 else None, pirozhok_type, pirozhok_qty if pirozhok_qty > 0 else None)
+        condition = self.condition_select.values[0]
+        add_shop_role(role_id, role.name, price_coins if price_coins > 0 else None, pirozhok_type, pirozhok_qty if pirozhok_qty > 0 else None, condition)
         embed = discord.Embed(title="✅ Готово", color=discord.Color.green())
         desc = f"Роль {role.mention} добавлена в магазин."
         if price_coins > 0:
             desc += f"\n💰 Цена: {price_coins} {COIN_NAME}"
         if pirozhok_type and pirozhok_qty > 0:
             desc += f"\n🥧 Цена: {pirozhok_qty} шт. '{pirozhok_type}'"
+        desc += f"\n📌 Условие: {'ИЛИ' if condition == 'or' else 'И'}"
         embed.description = desc
         await interaction.response.send_message(embed=embed, ephemeral=True)
+        # Логирование
+        log_admin_action(interaction.user.id, interaction.user.name, "add_shop_role", target_id=role_id, target_name=role.name, details=f"coins={price_coins}, pirozhki={pirozhok_type}:{pirozhok_qty}, condition={condition}")
+        await send_log(interaction.user.name, "добавил роль в магазин", role.name, f"цена: {desc}")
 
 class BuyRoleChoiceView(View):
     def __init__(self, user_id, role_id, role_name, price_coins, pirozhok_type, pirozhok_qty):
@@ -408,7 +435,7 @@ class BuyRoleChoiceView(View):
             await interaction.response.send_message("❌ Ошибка при списании пирожков.", ephemeral=True)
         self.stop()
 
-# ---------- АДМИНСКАЯ ПАНЕЛЬ (КНОПКИ) ----------
+# ---------- АДМИНСКАЯ ПАНЕЛЬ ----------
 class AdminPanelView(View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -453,6 +480,22 @@ class AdminPanelView(View):
         modal = AdminSalaryModal()
         await interaction.response.send_modal(modal)
 
+    @discord.ui.button(label="🎁 Ежедневная награда", style=discord.ButtonStyle.blurple, row=2)
+    async def daily_reward_settings(self, interaction: discord.Interaction, button: Button):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Нет прав.", ephemeral=True)
+            return
+        modal = AdminDailyRewardModal()
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="🛒 Добавить роль", style=discord.ButtonStyle.primary, row=3)
+    async def add_shop_role(self, interaction: discord.Interaction, button: Button):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Нет прав.", ephemeral=True)
+            return
+        modal = AddShopRoleModal()
+        await interaction.response.send_modal(modal)
+
 # Модальные окна для админ-панели
 class AdminGiveCoinsModal(Modal):
     def __init__(self):
@@ -473,6 +516,8 @@ class AdminGiveCoinsModal(Modal):
             await interaction.response.send_message("❌ Сумма должна быть положительной.", ephemeral=True)
             return
         update_balance(user_id, amount)
+        log_admin_action(interaction.user.id, interaction.user.name, "give_coins", target_id=user_id, details=str(amount))
+        await send_log(interaction.user.name, "выдал монеты", f"<@{user_id}>", f"{amount} {COIN_NAME}")
         await interaction.response.send_message(f"✅ Выдано {amount} {COIN_NAME} пользователю <@{user_id}>.", ephemeral=True)
 
 class AdminTakeCoinsModal(Modal):
@@ -498,6 +543,8 @@ class AdminTakeCoinsModal(Modal):
             await interaction.response.send_message(f"❌ У пользователя только {current} {COIN_NAME}.", ephemeral=True)
             return
         update_balance(user_id, -amount)
+        log_admin_action(interaction.user.id, interaction.user.name, "take_coins", target_id=user_id, details=str(amount))
+        await send_log(interaction.user.name, "забрал монеты", f"<@{user_id}>", f"{amount} {COIN_NAME}")
         await interaction.response.send_message(f"✅ Забрано {amount} {COIN_NAME} у пользователя <@{user_id}>.", ephemeral=True)
 
 class AdminGivePirozhkiModal(Modal):
@@ -526,6 +573,8 @@ class AdminGivePirozhkiModal(Modal):
             await interaction.response.send_message("❌ Количество должно быть положительным.", ephemeral=True)
             return
         add_pirozhki(user_id, pirozhok_type, quantity)
+        log_admin_action(interaction.user.id, interaction.user.name, "give_pirozhki", target_id=user_id, details=f"{pirozhok_type} x{quantity}")
+        await send_log(interaction.user.name, "выдал пирожки", f"<@{user_id}>", f"{quantity} шт. '{pirozhok_type}'")
         await interaction.response.send_message(f"✅ Выдано {quantity} пирожков '{pirozhok_type}' пользователю <@{user_id}>.", ephemeral=True)
 
 class AdminTakePirozhkiModal(Modal):
@@ -558,6 +607,8 @@ class AdminTakePirozhkiModal(Modal):
             await interaction.response.send_message(f"❌ У пользователя только {current} пирожков '{pirozhok_type}'.", ephemeral=True)
             return
         if remove_pirozhki(user_id, pirozhok_type, quantity):
+            log_admin_action(interaction.user.id, interaction.user.name, "take_pirozhki", target_id=user_id, details=f"{pirozhok_type} x{quantity}")
+            await send_log(interaction.user.name, "забрал пирожки", f"<@{user_id}>", f"{quantity} шт. '{pirozhok_type}'")
             await interaction.response.send_message(f"✅ Забрано {quantity} пирожков '{pirozhok_type}' у пользователя <@{user_id}>.", ephemeral=True)
         else:
             await interaction.response.send_message("❌ Ошибка при списании.", ephemeral=True)
@@ -582,9 +633,38 @@ class AdminSalaryModal(Modal):
             return
         set_work_min(new_min)
         set_work_max(new_max)
+        log_admin_action(interaction.user.id, interaction.user.name, "set_work_salary", details=f"min={new_min}, max={new_max}")
+        await send_log(interaction.user.name, "изменил зарплату за работу", None, f"от {new_min} до {new_max}")
         await interaction.response.send_message(f"✅ Зарплата установлена: от {new_min} до {new_max} {COIN_NAME}.", ephemeral=True)
+        # Обновляем главный эмбед
+        channel = bot.get_channel(ALLOWED_CHANNEL_ID)
+        if channel:
+            await EconomyView.update_main_embed(channel)
 
-# ---------- VIEW ДЛЯ ВЫБОРА (ингредиенты, рецепты, продажа, магазин) ----------
+class AdminDailyRewardModal(Modal):
+    def __init__(self):
+        super().__init__(title="Изменить ежедневную награду")
+        self.reward_input = TextInput(label="Новая сумма", placeholder=f"Текущая: {get_daily_reward()}", required=True)
+        self.add_item(self.reward_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            new_reward = int(self.reward_input.value)
+            if new_reward <= 0:
+                raise ValueError
+        except ValueError:
+            await interaction.response.send_message("❌ Введите положительное число.", ephemeral=True)
+            return
+        set_daily_reward(new_reward)
+        log_admin_action(interaction.user.id, interaction.user.name, "set_daily_reward", details=str(new_reward))
+        await send_log(interaction.user.name, "изменил ежедневную награду", None, f"{new_reward} {COIN_NAME}")
+        await interaction.response.send_message(f"✅ Ежедневная награда изменена на {new_reward} {COIN_NAME}.", ephemeral=True)
+        # Обновляем главный эмбед
+        channel = bot.get_channel(ALLOWED_CHANNEL_ID)
+        if channel:
+            await EconomyView.update_main_embed(channel)
+
+# ---------- ВСПОМОГАТЕЛЬНЫЕ VIEW ДЛЯ ВЫБОРА (пользовательские) ----------
 class IngredientSelectView(View):
     def __init__(self, user_id):
         super().__init__(timeout=60)
@@ -683,14 +763,17 @@ class ShopSelect(Select):
         self.user_id = user_id
         roles = get_shop_roles()
         options = []
-        for role_id, role_name, price_coins, pirozhok_type, pirozhok_qty in roles:
+        for role_id, role_name, price_coins, pirozhok_type, pirozhok_qty, condition in roles:
             label = role_name[:100]
             description = []
             if price_coins and price_coins > 0:
                 description.append(f"{price_coins} монет")
             if pirozhok_type and pirozhok_qty and pirozhok_qty > 0:
                 description.append(f"{pirozhok_qty} пирожков")
-            desc = " или ".join(description) if description else "нет цены"
+            if condition == 'and':
+                desc = " и ".join(description) if description else "нет цены"
+            else:
+                desc = " или ".join(description) if description else "нет цены"
             options.append(discord.SelectOption(label=label, description=desc[:100], value=str(role_id)))
         super().__init__(placeholder="Выберите роль для покупки", options=options, row=0)
 
@@ -703,10 +786,36 @@ class ShopSelect(Select):
         if not role_data:
             await interaction.response.send_message("❌ Роль не найдена в магазине.", ephemeral=True)
             return
-        role_name, price_coins, pirozhok_type, pirozhok_qty = role_data
+        role_name, price_coins, pirozhok_type, pirozhok_qty, condition = role_data
         has_coins = price_coins and price_coins > 0
         has_pirozhki = pirozhok_type and pirozhok_qty and pirozhok_qty > 0
-        if has_coins and not has_pirozhki:
+        if has_coins and has_pirozhki and condition == 'and':
+            # Нужны и монеты, и пирожки
+            bal = get_balance(interaction.user.id)
+            have_p = get_pirozhki_quantity(interaction.user.id, pirozhok_type)
+            if bal < price_coins or have_p < pirozhok_qty:
+                await interaction.response.send_message(f"❌ Недостаточно! Нужно {price_coins} {COIN_NAME} и {pirozhok_qty} пирожков '{pirozhok_type}'.", ephemeral=True)
+                return
+            role = interaction.guild.get_role(role_id)
+            if not role:
+                await interaction.response.send_message("❌ Роль больше не существует.", ephemeral=True)
+                return
+            if role in interaction.user.roles:
+                await interaction.response.send_message("❌ У вас уже есть эта роль.", ephemeral=True)
+                return
+            update_balance(interaction.user.id, -price_coins)
+            recipe = get_recipe_by_name(pirozhok_type)
+            if recipe:
+                remove_inventory(interaction.user.id, "pirozhok", recipe[0], pirozhok_qty)
+            await interaction.user.add_roles(role)
+            embed = discord.Embed(title="✅ Покупка", description=f"Вы купили роль {role.mention} за {price_coins} {COIN_NAME} и {pirozhok_qty} пирожков '{pirozhok_type}'!", color=discord.Color.green())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        elif has_coins and has_pirozhki and condition == 'or':
+            # Показываем выбор
+            view = BuyRoleChoiceView(interaction.user.id, role_id, role_name, price_coins, pirozhok_type, pirozhok_qty)
+            embed = discord.Embed(title=f"Покупка роли {role_name}", description="Выберите способ оплаты:", color=discord.Color.orange())
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        elif has_coins and not has_pirozhki:
             bal = get_balance(interaction.user.id)
             if bal < price_coins:
                 await interaction.response.send_message(f"❌ Недостаточно монет! Нужно {price_coins}, у вас {bal}.", ephemeral=True)
@@ -734,30 +843,45 @@ class ShopSelect(Select):
             if role in interaction.user.roles:
                 await interaction.response.send_message("❌ У вас уже есть эта роль.", ephemeral=True)
                 return
-            conn = sqlite3.connect(DB_PATH)
-            c = conn.cursor()
-            c.execute("SELECT id FROM recipes WHERE name = ?", (pirozhok_type,))
-            row = c.fetchone()
-            conn.close()
-            if not row:
-                await interaction.response.send_message("❌ Ошибка: тип пирожка не найден.", ephemeral=True)
-                return
-            recipe_id = row[0]
-            if remove_inventory(interaction.user.id, "pirozhok", recipe_id, pirozhok_qty):
-                await interaction.user.add_roles(role)
-                embed = discord.Embed(title="✅ Покупка", description=f"Вы купили роль {role.mention} за {pirozhok_qty} пирожков '{pirozhok_type}'!", color=discord.Color.green())
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-            else:
-                await interaction.response.send_message("❌ Ошибка при списании пирожков.", ephemeral=True)
+            recipe = get_recipe_by_name(pirozhok_type)
+            if recipe:
+                remove_inventory(interaction.user.id, "pirozhok", recipe[0], pirozhok_qty)
+            await interaction.user.add_roles(role)
+            embed = discord.Embed(title="✅ Покупка", description=f"Вы купили роль {role.mention} за {pirozhok_qty} пирожков '{pirozhok_type}'!", color=discord.Color.green())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
         else:
-            view = BuyRoleChoiceView(interaction.user.id, role_id, role_name, price_coins, pirozhok_type, pirozhok_qty)
-            embed = discord.Embed(title=f"Покупка роли {role_name}", description="Выберите способ оплаты:", color=discord.Color.orange())
-            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+            await interaction.response.send_message("❌ Эта роль не имеет цены.", ephemeral=True)
 
 # ---------- ГЛАВНОЕ МЕНЮ (ПОЛЬЗОВАТЕЛЬСКОЕ) ----------
 class EconomyView(View):
     def __init__(self):
         super().__init__(timeout=None)
+
+    @staticmethod
+    async def update_main_embed(channel):
+        work_min = get_work_min()
+        work_max = get_work_max()
+        daily_reward = get_daily_reward()
+        embed = discord.Embed(
+            title="💎 Экономический бот",
+            description=(
+                f"**{COIN_NAME}** — основная валюта.\n\n"
+                f"🎁 **Ежедневный бонус:** {daily_reward} {COIN_NAME}\n"
+                f"💼 **Работа:** {work_min} - {work_max} {COIN_NAME} (решите пример)\n"
+                "• 20 попыток в 10 минут\n\n"
+                "🎲 **Орёл/Решка:** удвоение ставки\n"
+                "💸 **Передать монеты**\n\n"
+                "**🥧 Выпечка пирожков:**\n"
+                "• Купите ингредиенты, испеките пирожки.\n"
+                "• Продайте или обменяйте на роли."
+            ),
+            color=discord.Color.gold()
+        )
+        async for message in channel.history(limit=50):
+            if message.author == bot.user and message.embeds:
+                await message.edit(embed=embed, view=EconomyView())
+                return
+        await channel.send(embed=embed, view=EconomyView())
 
     @discord.ui.button(label="💰 Баланс", style=discord.ButtonStyle.blurple, row=0)
     async def balance_button(self, interaction: discord.Interaction, button: Button):
@@ -774,9 +898,10 @@ class EconomyView(View):
             seconds = remaining % 60
             await interaction.response.send_message(f"❌ Вы уже получали бонус сегодня. Следующая награда через {hours}ч {minutes}м {seconds}с.", ephemeral=True)
             return
-        update_balance(interaction.user.id, DAILY_REWARD)
+        reward = get_daily_reward()
+        update_balance(interaction.user.id, reward)
         set_daily(interaction.user.id)
-        embed = discord.Embed(title="🎁 Ежедневный бонус", description=f"Вы получили {DAILY_REWARD} {COIN_NAME}!", color=discord.Color.green())
+        embed = discord.Embed(title="🎁 Ежедневный бонус", description=f"Вы получили {reward} {COIN_NAME}!", color=discord.Color.green())
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @discord.ui.button(label="💼 Работа", style=discord.ButtonStyle.blurple, row=0)
@@ -828,7 +953,7 @@ class EconomyView(View):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         embed = discord.Embed(title="🛒 Магазин ролей", color=discord.Color.green())
-        for role_id, role_name, price_coins, pirozhok_type, pirozhok_qty in roles:
+        for role_id, role_name, price_coins, pirozhok_type, pirozhok_qty, condition in roles:
             role = interaction.guild.get_role(role_id)
             display_name = role.name if role else role_name
             text = []
@@ -836,7 +961,11 @@ class EconomyView(View):
                 text.append(f"{price_coins} {COIN_NAME}")
             if pirozhok_type and pirozhok_qty and pirozhok_qty > 0:
                 text.append(f"{pirozhok_qty} пирожков '{pirozhok_type}'")
-            embed.add_field(name=display_name, value=" или ".join(text), inline=False)
+            if condition == 'and':
+                value = " и ".join(text)
+            else:
+                value = " или ".join(text)
+            embed.add_field(name=display_name, value=value, inline=False)
         view = ShopSelectView(interaction.user.id)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
@@ -876,29 +1005,8 @@ async def on_ready():
     # Основной канал
     channel = bot.get_channel(ALLOWED_CHANNEL_ID)
     if channel:
-        async for message in channel.history(limit=50):
-            if message.author == bot.user and message.embeds and message.components:
-                await message.edit(view=EconomyView())
-                print("Главное сообщение обновлено.")
-                break
-        else:
-            embed = discord.Embed(
-                title="💎 Экономический бот",
-                description=(
-                    "Нажимайте на кнопки ниже.\n\n"
-                    f"**{COIN_NAME}** — основная валюта.\n"
-                    "• Ежедневный бонус — 100 монет\n"
-                    "• Работа — решите математическую задачу (до 20 раз в 10 минут)\n"
-                    "• Орёл/Решка — удвоение ставки\n"
-                    "• Передать монеты\n\n"
-                    "**🥧 Выпечка пирожков:**\n"
-                    "• Купите ингредиенты, испеките пирожки.\n"
-                    "• Пирожки можно продать или обменять на роли."
-                ),
-                color=discord.Color.gold()
-            )
-            await channel.send(embed=embed, view=EconomyView())
-            print("Главное сообщение отправлено.")
+        await EconomyView.update_main_embed(channel)
+        print("Главное сообщение обновлено.")
     else:
         print(f"❌ Канал {ALLOWED_CHANNEL_ID} не найден!")
 
@@ -917,6 +1025,14 @@ async def on_ready():
                 print("Админ-панель отправлена.")
         else:
             print(f"❌ Админ-канал {ADMIN_CHANNEL_ID} не найден!")
+
+    # Канал логов
+    if LOG_CHANNEL_ID:
+        log_channel = bot.get_channel(LOG_CHANNEL_ID)
+        if log_channel:
+            print(f"Логи будут отправляться в канал {log_channel.name}")
+        else:
+            print(f"❌ Канал логов {LOG_CHANNEL_ID} не найден!")
 
 # ---------- ЗАПУСК ----------
 if __name__ == "__main__":
