@@ -33,7 +33,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ---------- Функция отправки логов в канал ----------
+# ---------- Функция отправки логов ----------
 async def send_log(admin_name, action, target_name=None, details=None):
     if LOG_CHANNEL_ID:
         channel = bot.get_channel(LOG_CHANNEL_ID)
@@ -99,13 +99,168 @@ class MathProblemView(View):
             self.answered = True
             if option == self.answer:
                 update_balance(self.user_id, self.reward)
-                embed = discord.Embed(title="✅ Правильно!", description=f"Вы получили {self.reward} {COIN_NAME}!", color=discord.Color.green())
+                add_xp(self.user_id, get_xp_per_work())
+                embed = discord.Embed(title="✅ Правильно!", description=f"Вы получили {self.reward} {COIN_NAME} и {get_xp_per_work()} XP!", color=discord.Color.green())
                 await interaction.response.edit_message(embed=embed, view=None)
             else:
                 embed = discord.Embed(title="❌ Неправильно!", description=f"Правильный ответ: {self.answer}. Вы не получили монет.", color=discord.Color.red())
                 await interaction.response.edit_message(embed=embed, view=None)
             self.stop()
         return callback
+
+# ---------- СЛОТЫ ----------
+class SlotMachineView(View):
+    def __init__(self, user_id, bet):
+        super().__init__(timeout=60)
+        self.user_id = user_id
+        self.bet = bet
+        self.answered = False
+
+    @discord.ui.button(label="🎰 Крутить!", style=discord.ButtonStyle.primary)
+    async def spin(self, interaction: discord.Interaction, button: Button):
+        if self.answered:
+            await interaction.response.send_message("❌ Вы уже сыграли.", ephemeral=True)
+            return
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ Не для вас.", ephemeral=True)
+            return
+        self.answered = True
+        emojis = ["🍒", "🍊", "🍋", "🍉", "🔔", "💎"]
+        reel1 = random.choice(emojis)
+        reel2 = random.choice(emojis)
+        reel3 = random.choice(emojis)
+        result = f"{reel1} | {reel2} | {reel3}"
+        win = False
+        multiplier = 0
+        if reel1 == reel2 == reel3:
+            if reel1 == "💎":
+                multiplier = 10
+            elif reel1 == "🔔":
+                multiplier = 5
+            else:
+                multiplier = 3
+            win = True
+        elif reel1 == reel2 or reel1 == reel3 or reel2 == reel3:
+            multiplier = 2
+            win = True
+        if win:
+            winnings = self.bet * multiplier
+            update_balance(self.user_id, winnings)
+            add_xp(self.user_id, get_xp_per_gamble())
+            embed = discord.Embed(title="🎰 Слоты", description=f"{result}\n\n**Вы выиграли {winnings} {COIN_NAME}!** (x{multiplier})\n+{get_xp_per_gamble()} XP", color=discord.Color.green())
+        else:
+            update_balance(self.user_id, -self.bet)
+            embed = discord.Embed(title="🎰 Слоты", description=f"{result}\n\n**Вы проиграли {self.bet} {COIN_NAME}.**", color=discord.Color.red())
+        await interaction.response.edit_message(embed=embed, view=None)
+        self.stop()
+
+class SlotsBetModal(Modal):
+    def __init__(self, user_id):
+        super().__init__(title="Слоты - ставка", timeout=120)
+        self.user_id = user_id
+        self.bet_input = TextInput(label="Ставка", placeholder="Количество монет", required=True)
+        self.add_item(self.bet_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            bet = int(self.bet_input.value)
+        except ValueError:
+            await interaction.response.send_message("❌ Ставка должна быть числом.", ephemeral=True)
+            return
+        if bet <= 0:
+            await interaction.response.send_message("❌ Ставка должна быть положительной.", ephemeral=True)
+            return
+        bal = get_balance(self.user_id)
+        if bal < bet:
+            await interaction.response.send_message(f"❌ Недостаточно монет! Ваш баланс: {bal} {COIN_NAME}.", ephemeral=True)
+            return
+        view = SlotMachineView(self.user_id, bet)
+        embed = discord.Embed(title="🎰 Слоты", description=f"Ставка: **{bet}** {COIN_NAME}\nНажмите 'Крутить!'", color=discord.Color.blue())
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+# ---------- ПРОМОКОДЫ (АДМИН) ----------
+class CreatePromocodeModal(Modal):
+    def __init__(self):
+        super().__init__(title="Создать промокод", timeout=120)
+        self.code_input = TextInput(label="Код", placeholder="Уникальное слово", required=True)
+        self.reward_type_input = TextInput(label="Тип награды (coins/pirozhki/xp)", placeholder="coins, pirozhki или xp", required=True)
+        self.reward_amount_input = TextInput(label="Количество", placeholder="Число", required=True)
+        self.reward_item_input = TextInput(label="Для пирожков: название (пирожок с картошкой)", required=False)
+        self.uses_limit_input = TextInput(label="Лимит использований (0 = безлимит)", placeholder="Число", required=True)
+        self.add_item(self.code_input)
+        self.add_item(self.reward_type_input)
+        self.add_item(self.reward_amount_input)
+        self.add_item(self.reward_item_input)
+        self.add_item(self.uses_limit_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Нет прав.", ephemeral=True)
+            return
+        code = self.code_input.value.strip().upper()
+        reward_type = self.reward_type_input.value.strip().lower()
+        try:
+            reward_amount = int(self.reward_amount_input.value)
+            uses_limit = int(self.uses_limit_input.value)
+            if uses_limit == 0:
+                uses_limit = None
+        except ValueError:
+            await interaction.response.send_message("❌ Количество и лимит должны быть числами.", ephemeral=True)
+            return
+        reward_item = self.reward_item_input.value.strip()
+        if reward_type not in ("coins", "pirozhki", "xp"):
+            await interaction.response.send_message("❌ Тип награды: coins, pirozhki или xp.", ephemeral=True)
+            return
+        if reward_type == "pirozhki" and not reward_item:
+            await interaction.response.send_message("❌ Укажите название пирожка (например, пирожок с картошкой).", ephemeral=True)
+            return
+        success = create_promocode_full(code, reward_type, reward_amount, reward_item, uses_limit, interaction.user.id)
+        if success:
+            log_admin_action(interaction.user.id, interaction.user.name, "create_promocode", details=f"{code} -> {reward_amount} {reward_type} {reward_item}")
+            await send_log(interaction.user.name, "создал промокод", None, f"{code}: {reward_amount} {reward_type}")
+            await interaction.response.send_message(f"✅ Промокод `{code}` создан!", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ Такой промокод уже существует.", ephemeral=True)
+
+class ActivatePromocodeModal(Modal):
+    def __init__(self, user_id):
+        super().__init__(title="Активация промокода", timeout=120)
+        self.user_id = user_id
+        self.code_input = TextInput(label="Промокод", placeholder="Введите код", required=True)
+        self.add_item(self.code_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        code = self.code_input.value.strip().upper()
+        result = use_promocode_full(self.user_id, code)
+        if result == "already_used":
+            await interaction.response.send_message("❌ Вы уже активировали этот промокод.", ephemeral=True)
+        elif result == "not_found":
+            await interaction.response.send_message("❌ Промокод не найден.", ephemeral=True)
+        elif result == "expired":
+            await interaction.response.send_message("❌ Промокод истёк (лимит использований).", ephemeral=True)
+        else:
+            status, rtype, ramount, ritem = result
+            if rtype == "coins":
+                await interaction.response.send_message(f"✅ Промокод активирован! Вы получили {ramount} {COIN_NAME}.", ephemeral=True)
+            elif rtype == "pirozhki":
+                await interaction.response.send_message(f"✅ Промокод активирован! Вы получили {ramount} пирожков '{ritem}'.", ephemeral=True)
+            elif rtype == "xp":
+                await interaction.response.send_message(f"✅ Промокод активирован! Вы получили {ramount} опыта.", ephemeral=True)
+
+# ---------- ДОНАТ КНОПКА ----------
+class DonateView(View):
+    def __init__(self, user_id):
+        super().__init__(timeout=60)
+        self.user_id = user_id
+
+    @discord.ui.button(label="Купить 10 монет за 1 рубль", style=discord.ButtonStyle.green)
+    async def donate(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("❌ Не для вас.", ephemeral=True)
+            return
+        embed = discord.Embed(title="💸 Донат", description="Для приобретения монет обратитесь к владельцу сервера.\n\nСвяжитесь с ним в личные сообщения или в специальном канале.", color=discord.Color.gold())
+        await interaction.response.edit_message(embed=embed, view=None)
+        self.stop()
 
 # ---------- МОДАЛЬНЫЕ ОКНА (базовые) ----------
 class TransferModal(Modal):
@@ -196,8 +351,9 @@ class FlipChoiceView(View):
         embed.add_field(name="Результат", value=result)
         if win:
             update_balance(self.user_id, self.bet)
+            add_xp(self.user_id, get_xp_per_gamble())
             new_bal = get_balance(self.user_id)
-            embed.add_field(name="💰 Вы выиграли!", value=f"+{self.bet} {COIN_NAME}")
+            embed.add_field(name="💰 Вы выиграли!", value=f"+{self.bet} {COIN_NAME}\n+{get_xp_per_gamble()} XP")
             embed.set_footer(text=f"Новый баланс: {new_bal} {COIN_NAME}")
             embed.color = discord.Color.green()
         else:
@@ -494,7 +650,40 @@ class AdminPanelView(View):
         modal = AddShopRoleModal()
         await interaction.response.send_modal(modal)
 
-# Модальные окна для админ-панели
+    # Новые кнопки (ряд 4)
+    @discord.ui.button(label="➕ Создать промокод", style=discord.ButtonStyle.primary, row=4)
+    async def create_promo(self, interaction: discord.Interaction, button: Button):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Нет прав.", ephemeral=True)
+            return
+        modal = CreatePromocodeModal()
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="📈 Выдать опыт", style=discord.ButtonStyle.green, row=4)
+    async def give_xp(self, interaction: discord.Interaction, button: Button):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Нет прав.", ephemeral=True)
+            return
+        modal = AdminGiveXpModal()
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="📉 Забрать опыт", style=discord.ButtonStyle.red, row=4)
+    async def take_xp(self, interaction: discord.Interaction, button: Button):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Нет прав.", ephemeral=True)
+            return
+        modal = AdminTakeXpModal()
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="⚙️ Настройка опыта", style=discord.ButtonStyle.blurple, row=4)
+    async def xp_settings(self, interaction: discord.Interaction, button: Button):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Нет прав.", ephemeral=True)
+            return
+        modal = AdminXpSettingsModal()
+        await interaction.response.send_modal(modal)
+
+# ---------- МОДАЛЬНЫЕ ОКНА ДЛЯ АДМИН-ПАНЕЛИ ----------
 class AdminGiveCoinsModal(Modal):
     def __init__(self):
         super().__init__(title="Выдать монеты")
@@ -659,6 +848,84 @@ class AdminDailyRewardModal(Modal):
         channel = bot.get_channel(ALLOWED_CHANNEL_ID)
         if channel:
             await EconomyView.update_main_embed(channel)
+
+class AdminGiveXpModal(Modal):
+    def __init__(self):
+        super().__init__(title="Выдать опыт")
+        self.user_input = TextInput(label="ID пользователя", placeholder="Цифровой ID", required=True)
+        self.amount_input = TextInput(label="Количество опыта", placeholder="Число", required=True)
+        self.add_item(self.user_input)
+        self.add_item(self.amount_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            user_id = int(self.user_input.value)
+            amount = int(self.amount_input.value)
+        except ValueError:
+            await interaction.response.send_message("❌ ID и количество должны быть числами.", ephemeral=True)
+            return
+        if amount <= 0:
+            await interaction.response.send_message("❌ Количество должно быть положительным.", ephemeral=True)
+            return
+        add_xp(user_id, amount)
+        log_admin_action(interaction.user.id, interaction.user.name, "give_xp", target_id=user_id, details=str(amount))
+        await send_log(interaction.user.name, "выдал опыт", f"<@{user_id}>", f"{amount} XP")
+        await interaction.response.send_message(f"✅ Выдано {amount} XP пользователю <@{user_id}>.", ephemeral=True)
+
+class AdminTakeXpModal(Modal):
+    def __init__(self):
+        super().__init__(title="Забрать опыт")
+        self.user_input = TextInput(label="ID пользователя", placeholder="Цифровой ID", required=True)
+        self.amount_input = TextInput(label="Количество опыта", placeholder="Число", required=True)
+        self.add_item(self.user_input)
+        self.add_item(self.amount_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            user_id = int(self.user_input.value)
+            amount = int(self.amount_input.value)
+        except ValueError:
+            await interaction.response.send_message("❌ ID и количество должны быть числами.", ephemeral=True)
+            return
+        if amount <= 0:
+            await interaction.response.send_message("❌ Количество должно быть положительным.", ephemeral=True)
+            return
+        current_xp, _ = get_xp(user_id)
+        if current_xp < amount:
+            await interaction.response.send_message(f"❌ У пользователя только {current_xp} XP.", ephemeral=True)
+            return
+        set_xp(user_id, current_xp - amount)
+        log_admin_action(interaction.user.id, interaction.user.name, "take_xp", target_id=user_id, details=str(amount))
+        await send_log(interaction.user.name, "забрал опыт", f"<@{user_id}>", f"{amount} XP")
+        await interaction.response.send_message(f"✅ Забрано {amount} XP у пользователя <@{user_id}>.", ephemeral=True)
+
+class AdminXpSettingsModal(Modal):
+    def __init__(self):
+        super().__init__(title="Настройка опыта")
+        self.xp_work_input = TextInput(label="XP за работу", placeholder=f"Текущий: {get_xp_per_work()}", required=True)
+        self.xp_gamble_input = TextInput(label="XP за игру (слоты/орёл)", placeholder=f"Текущий: {get_xp_per_gamble()}", required=True)
+        self.base_xp_input = TextInput(label="База XP для уровня", placeholder=f"Текущий: {get_setting('level_base_xp', 100)}", required=True)
+        self.add_item(self.xp_work_input)
+        self.add_item(self.xp_gamble_input)
+        self.add_item(self.base_xp_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            xp_work = int(self.xp_work_input.value)
+            xp_gamble = int(self.xp_gamble_input.value)
+            base_xp = int(self.base_xp_input.value)
+        except ValueError:
+            await interaction.response.send_message("❌ Введите числа.", ephemeral=True)
+            return
+        if xp_work < 0 or xp_gamble < 0 or base_xp <= 0:
+            await interaction.response.send_message("❌ Значения должны быть неотрицательными, база >0.", ephemeral=True)
+            return
+        set_xp_per_work(xp_work)
+        set_xp_per_gamble(xp_gamble)
+        set_setting('level_base_xp', base_xp)
+        log_admin_action(interaction.user.id, interaction.user.name, "set_xp_settings", details=f"work={xp_work}, gamble={xp_gamble}, base={base_xp}")
+        await send_log(interaction.user.name, "изменил настройки опыта", None, f"XP за работу: {xp_work}, за игру: {xp_gamble}, база уровня: {base_xp}")
+        await interaction.response.send_message(f"✅ Настройки опыта обновлены.", ephemeral=True)
 
 # ---------- ВСПОМОГАТЕЛЬНЫЕ VIEW ДЛЯ ВЫБОРА (пользовательские) ----------
 class IngredientSelectView(View):
@@ -864,10 +1131,14 @@ class EconomyView(View):
                 f"💼 **Работа:** {work_min} - {work_max} {COIN_NAME} (решите пример)\n"
                 "• 20 попыток в 10 минут\n\n"
                 "🎲 **Орёл/Решка:** удвоение ставки\n"
+                "🎰 **Слоты:** выигрыш x2, x3, x5, x10\n"
                 "💸 **Передать монеты**\n\n"
                 "**🥧 Выпечка пирожков:**\n"
                 "• Купите ингредиенты, испеките пирожки.\n"
-                "• Продайте или обменяйте на роли."
+                "• Продайте или обменяйте на роли.\n\n"
+                "**📈 Система уровней:**\n"
+                "• За работу и игры даётся опыт.\n"
+                "• Повышайте уровень!"
             ),
             color=discord.Color.gold()
         )
@@ -881,6 +1152,13 @@ class EconomyView(View):
     async def balance_button(self, interaction: discord.Interaction, button: Button):
         bal = get_balance(interaction.user.id)
         embed = discord.Embed(title="💰 Ваш баланс", description=f"**{bal}** {COIN_NAME}", color=discord.Color.blurple())
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="📈 Уровень", style=discord.ButtonStyle.blurple, row=0)
+    async def level_button(self, interaction: discord.Interaction, button: Button):
+        xp, level = get_xp(interaction.user.id)
+        next_level_xp = get_level_xp(level)
+        embed = discord.Embed(title="📈 Ваш уровень", description=f"**Уровень:** {level}\n**Опыт:** {xp} / {next_level_xp}", color=discord.Color.blue())
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @discord.ui.button(label="🎁 Ежедневный", style=discord.ButtonStyle.green, row=0)
@@ -923,6 +1201,11 @@ class EconomyView(View):
         modal = FlipModal(interaction.user.id)
         await interaction.response.send_modal(modal)
 
+    @discord.ui.button(label="🎰 Слоты", style=discord.ButtonStyle.primary, row=1)
+    async def slots_button(self, interaction: discord.Interaction, button: Button):
+        modal = SlotsBetModal(interaction.user.id)
+        await interaction.response.send_modal(modal)
+
     @discord.ui.button(label="🏆 Топ", style=discord.ButtonStyle.blurple, row=1)
     async def top_button(self, interaction: discord.Interaction, button: Button):
         rows = get_top_balances(10)
@@ -930,7 +1213,7 @@ class EconomyView(View):
             embed = discord.Embed(title="🏆 Топ", description="Нет данных.", color=discord.Color.blue())
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
-        embed = discord.Embed(title="🏆 Таблица лидеров", color=discord.Color.blue())
+        embed = discord.Embed(title="🏆 Таблица лидеров (монеты)", color=discord.Color.blue())
         desc = ""
         for idx, (user_id, bal) in enumerate(rows, start=1):
             user = bot.get_user(user_id)
@@ -989,6 +1272,17 @@ class EconomyView(View):
     async def sell_pirozhki_button(self, interaction: discord.Interaction, button: Button):
         view = SellPirozhokSelectView(interaction.user.id)
         embed = discord.Embed(title="💰 Продажа пирожков", description="Выберите тип", color=discord.Color.green())
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    @discord.ui.button(label="🎫 Промокод", style=discord.ButtonStyle.blurple, row=3)
+    async def promo_button(self, interaction: discord.Interaction, button: Button):
+        modal = ActivatePromocodeModal(interaction.user.id)
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="💸 Донат", style=discord.ButtonStyle.green, row=3)
+    async def donate_button(self, interaction: discord.Interaction, button: Button):
+        view = DonateView(interaction.user.id)
+        embed = discord.Embed(title="💸 Поддержать сервер", description="Нажмите кнопку, чтобы узнать, как приобрести монеты.", color=discord.Color.gold())
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 # ---------- СОБЫТИЯ БОТА ----------
